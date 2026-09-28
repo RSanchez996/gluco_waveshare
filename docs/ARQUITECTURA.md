@@ -12,26 +12,24 @@ La inicialización conserva la secuencia del ejemplo oficial de Waveshare
 5. LVGL 8.4 con un buffer interno de 18 líneas.
 
 Se usa un framebuffer RGB y el buffer de rebote de diez líneas del perfil
-Waveshare v1.0.4. Antes de iniciar el panel se baja el reloj RGB de 16 a 12 MHz
-para dar margen a PSRAM cuando se procesan las respuestas HTTPS.
+Waveshare v1.0.4. Antes de iniciar el panel se fija el reloj RGB en 14 MHz,
+igual que en la versión 0.8.0 que funcionó en esta placa.
 
 ## Arranque por fases
 
 La aplicación no activa Wi-Fi antes de que LCD, táctil y LVGL estén listos. Cada
 fase se imprime por serie. La última fase crítica se conserva en memoria RTC
-durante los reinicios WDT, sin escrituras periódicas en flash. Los fallos
-controlados quedan detenidos; tres reinicios rápidos activan una pantalla de
-modo seguro.
+NOINIT con una comprobación de integridad, sin escrituras periódicas en flash.
+Los fallos controlados quedan detenidos; tres reinicios consecutivos por WDT
+o excepción activan una pantalla de modo seguro.
 
 ## Tareas
 
-- El bucle principal es el unico que llama a LVGL y al servidor web temporal.
-- El bucle de Arduino inicializa LCD y LVGL y sirve el portal. En el arranque
-  se detecta su núcleo y las tareas HTTPS (glucosa/clima, login y
-  geocodificación) se fijan al otro con prioridad 0. La pila Wi-Fi tiene
-  mayor prioridad; los trabajos
-  periódicos se espacian y la lectura HTTP cede CPU cada 2 KiB. Es normal que
-  las consultas tarden más que antes.
+- El bucle principal es el único que llama a LVGL y al servidor web temporal.
+- La tarea periódica de glucosa y clima corre separada del bucle principal en
+  CPU1, prioridad 0, como en 0.8.0. El bucle de Arduino tiene prioridad mayor.
+  El login y la geocodificación temporales usan el otro núcleo con prioridad
+  0. Las consultas se espacian y la lectura HTTP cede CPU cada 4 KiB.
 - `stateMutex` protege una instantánea de solo lectura para la interfaz.
 - `httpMutex` impide dos conexiones TLS simultaneas.
 - Los documentos JSON grandes y el buffer HTTP se reservan en PSRAM.

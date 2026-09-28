@@ -2,7 +2,7 @@
 
 El Wi-Fi, LibreLinkUp, el usuario y la ubicación se guardan en la partición
 `nvs` del archivo `firmware/partitions.csv`, en el rango `0x9000`–`0x68FFF`
-(`0x60000` bytes). La tabla es idéntica en las versiones 0.8.1 y 0.8.2.
+(`0x60000` bytes). La tabla es idéntica desde la versión 0.8.0 hasta la 0.8.3.
 
 Una carga normal con `pio run -t upload` no incluye `erase`. No hay suficiente
 información de la placa afectada para saber por qué se perdieron los ajustes;

@@ -38,11 +38,11 @@ public:
         }
         memcpy(data + used, p, n); used += n; data[used] = 0;
         bytesSinceSleep += n;
-        if (bytesSinceSleep >= 2 * 1024) {
+        if (bytesSinceSleep >= 4 * 1024) {
             bytesSinceSleep = 0;
-            // Limitar las ráfagas de copia desde PSRAM mientras el LCD RGB
-            // lee el mismo bus; la petición puede tardar algo más.
-            vTaskDelay(2);
+            // Pausa de 0.8.0: cede la CPU durante la descarga sin mantener
+            // la tarea de red ocupada continuamente.
+            vTaskDelay(1);
         }
         return n;
     }

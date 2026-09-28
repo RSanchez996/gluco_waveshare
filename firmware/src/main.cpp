@@ -3,12 +3,28 @@
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <esp_attr.h>
 #include <Preferences.h>
 Config config;AppState *sharedState=nullptr;SemaphoreHandle_t stateMutex=nullptr;SemaphoreHandle_t storageMutex=nullptr;SemaphoreHandle_t httpMutex=nullptr;QueueHandle_t patientQueue=nullptr;
 int arduinoCore=1;
 RTC_DATA_ATTR uint32_t bootMagic=0,rapidBoots=0,bootCount=0;
-RTC_DATA_ATTR char lastFaultStage[64]{};
+// RTC_DATA_ATTR se reinicializa al arrancar tras determinados resets. NOINIT
+// conserva la última fase escrita incluso cuando el WDT reinicia la aplicación.
+struct FaultMarker { uint32_t magic; uint32_t checksum; char stage[64]; };
+RTC_NOINIT_ATTR FaultMarker lastFaultMarker;
 namespace {
+constexpr uint32_t kFaultMarkerMagic=0x474C5333;
+uint32_t stageChecksum(const char *stage){
+    uint32_t hash=2166136261UL;
+    for(const unsigned char *p=reinterpret_cast<const unsigned char *>(stage);*p;++p){hash^=*p;hash*=16777619UL;}
+    return hash;
+}
+bool validFaultMarker(){
+    return lastFaultMarker.magic==kFaultMarkerMagic &&
+           memchr(lastFaultMarker.stage,0,sizeof(lastFaultMarker.stage))!=nullptr &&
+           lastFaultMarker.stage[0] &&
+           stageChecksum(lastFaultMarker.stage)==lastFaultMarker.checksum;
+}
 esp_reset_reason_t lastResetReason=ESP_RST_UNKNOWN;
 uint8_t faultBoots=0;
 String faultStages[3];
@@ -28,16 +44,16 @@ void recordFaultBoot(){
                      lastResetReason==ESP_RST_PANIC || lastResetReason==ESP_RST_WDT;
     faultBoots=fault?(previous>=3?3:previous+1):0;
     if(fault){
-        // La fase se conserva en RTC durante reinicios WDT, sin escribir
-        // flash mientras el controlador RGB lee el framebuffer de PSRAM.
-        const String stage=lastFaultStage[0]?String(lastFaultStage):p.getString("stage","Fase anterior desconocida");
+        // La marca NOINIT validada evita leer memoria no inicializada tras
+        // encender la placa y no escribe flash durante una consulta HTTPS.
+        const String stage=validFaultMarker()?String(lastFaultMarker.stage):p.getString("stage","Sin fase retenida en RTC");
         if(faultBoots>=1 && faultBoots<=3)p.putString((String("fault")+String(faultBoots)).c_str(),stage);
         for(unsigned i=0;i<3;++i)faultStages[i]=p.getString((String("fault")+String(i+1)).c_str(),"");
     }else{
         for(unsigned i=0;i<3;++i){const String key=String("fault")+String(i+1);if(p.isKey(key.c_str()))p.remove(key.c_str());}
         if(p.isKey("stage"))p.remove("stage");
     }
-    lastFaultStage[0]=0;
+    lastFaultMarker.magic=0;
     if(faultBoots!=previous)p.putUChar("faults",faultBoots);
     p.end();
 }
@@ -45,15 +61,17 @@ void recordFaultBoot(){
 const char *appPreviousFaultStage(unsigned index){return index<3?faultStages[index].c_str():"";}
 void appDiagnosticStage(const char *stage){
     if(!stage||!stage[0])return;
-    // RTC conserva la fase tras un WDT sin provocar escrituras NVS en las
-    // consultas HTTPS, que interrumpirían el barrido del panel RGB.
+    // La fase NOINIT se escribe en RAM sin interrumpir el barrido RGB.
     if(!persistDiagnosticStage(stage))return;
     if(storageMutex)xSemaphoreTake(storageMutex,portMAX_DELAY);
-    if(strcmp(lastFaultStage,stage)==0){
+    if(validFaultMarker()&&strcmp(lastFaultMarker.stage,stage)==0){
         if(storageMutex)xSemaphoreGive(storageMutex);
         return;
     }
-    strlcpy(lastFaultStage,stage,sizeof(lastFaultStage));
+    lastFaultMarker.magic=0;
+    strlcpy(lastFaultMarker.stage,stage,sizeof(lastFaultMarker.stage));
+    lastFaultMarker.checksum=stageChecksum(lastFaultMarker.stage);
+    lastFaultMarker.magic=kFaultMarkerMagic;
     if(storageMutex)xSemaphoreGive(storageMutex);
     Serial.printf("[FASE] %s\n",stage);
 }
@@ -78,7 +96,7 @@ void safeMode(){lv_obj_clean(lv_scr_act());lv_obj_set_style_bg_color(lv_scr_act(
 void setup(){
     arduinoCore=xPortGetCoreID();
     Serial.begin(115200);delay(800);lastResetReason=esp_reset_reason();if(bootMagic!=0x47574C43){bootMagic=0x47574C43;rapidBoots=0;bootCount=0;}++rapidBoots;++bootCount;Serial.printf("\n[BOOT 1/6] Gluco Waveshare %s | intento rápido %u\n",APP_VERSION,rapidBoots);Serial.printf("Chip %s | flash %u MB | PSRAM %u MB | reset %d (%s) | arranque %u\n",ESP.getChipModel(),ESP.getFlashChipSize()/1048576U,ESP.getPsramSize()/1048576U,int(lastResetReason),appResetReason(),bootCount);
-    Serial.printf("[CPU] Interfaz %d | HTTPS %d (prioridad 0)\n",arduinoCore,appWorkerCore());
+    Serial.printf("[CPU] Interfaz %d | datos periódicos 1 | portal HTTPS %d (prioridad 0)\n",arduinoCore,appWorkerCore());
     if(!psramFound()||ESP.getPsramSize()<7*1024*1024)halt("No se detectan los 8 MB de PSRAM OPI");
     recordFaultBoot();
     storageMutex=xSemaphoreCreateMutex();stateMutex=xSemaphoreCreateMutex();httpMutex=xSemaphoreCreateMutex();patientQueue=xQueueCreate(1,sizeof(PatientSelection));sharedState=static_cast<AppState *>(heap_caps_calloc(1,sizeof(AppState),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));if(!storageMutex||!stateMutex||!httpMutex||!patientQueue||!sharedState)halt("No se pudo reservar memoria de estado");

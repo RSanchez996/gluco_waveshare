@@ -259,10 +259,10 @@ void task(void *) {
 }
 
 void networkStart() {
-    // LCD, LVGL y servidor local viven en el núcleo del loop de Arduino.
-    // TLS/JSON se fijan al otro con prioridad 0 y pausas explícitas.
-    // Si comparten núcleo con Wi-Fi, la pila de radio tiene preferencia.
-    if (xTaskCreatePinnedToCore(task, "data", 18432, nullptr, 0, nullptr, appWorkerCore()) != pdPASS) {
+    // Regresar a la afinidad probada en 0.8.0: la consulta periódica HTTPS
+    // corre en una tarea separada, CPU1 y prioridad 0. El loop LVGL de Arduino
+    // tiene mayor prioridad y CPU0 queda para Wi-Fi y el controlador RGB.
+    if (xTaskCreatePinnedToCore(task, "data", 18432, nullptr, 0, nullptr, 1) != pdPASS) {
         Serial.println("[FATAL] No se pudo crear la tarea de red");
         while (true) delay(1000);
     }

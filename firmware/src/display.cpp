@@ -26,11 +26,10 @@ void displayInit(){
     if(lcd){
         lcd->configFrameBufferNumber(1);
         // El perfil Waveshare v1.0.4 usa RGB a 16 MHz y bounce buffer de 10
-        // líneas. 12 MHz deja más margen de PSRAM durante HTTPS; la interfaz
-        // es estática y no necesita la frecuencia de refresco de la demo.
+        // líneas. Se conserva el reloj de 14 MHz que funcionó en 0.8.0.
         auto *bus=lcd->getBus();
         if(bus&&bus->getBasicAttributes().type==ESP_PANEL_BUS_TYPE_RGB&&
-           !static_cast<BusRGB *>(bus)->configRGB_FreqHz(12*1000*1000))
+           !static_cast<BusRGB *>(bus)->configRGB_FreqHz(14*1000*1000))
             fatal("No se pudo configurar el reloj RGB");
     }
     if(!board->begin())fatal("board->begin() fallo");

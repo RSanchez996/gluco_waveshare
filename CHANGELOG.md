@@ -1,5 +1,18 @@
 # Cambios
 
+## 0.8.3
+
+- Revierte la tarea periódica de datos a CPU1/prioridad 0, como en 0.8.0.
+  La 0.8.2 la había movido a CPU0, donde coincidía con Wi-Fi y RGB; este
+  cambio coincide con los reinicios al consultar la gráfica de LibreLinkUp.
+- Recupera la pausa de lectura HTTP cada 4 KiB y el reloj RGB de 14 MHz de
+  0.8.0. El selector táctil de medidas de 0.8.1 se conserva en LVGL.
+- Guarda la última fase crítica en RTC NOINIT con marca y suma de comprobación.
+  RTC DATA se reinicializaba durante el arranque tras un WDT, por lo que la
+  pantalla mostraba «fase anterior desconocida».
+- Quita del README las instrucciones para subir el proyecto a GitHub.
+- Revisión estática del código; esta versión aún no se ha probado en la placa.
+
 ## 0.8.2
 
 - El login LibreLinkUp del portal baja de prioridad 1 a 0; la aplicación

@@ -7,7 +7,7 @@
 #include <atomic>
 #include "core.hpp"
 
-constexpr const char *APP_VERSION = "0.8.2";
+constexpr const char *APP_VERSION = "0.8.3";
 constexpr size_t MAX_CONNECTIONS = 12;
 enum class PortalMode : uint8_t { Off, WifiAccessPoint, WaitingForWifi, LocalNetwork };
 struct Config {

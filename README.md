@@ -1,6 +1,6 @@
 # gluco_waveshare
 
-Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.2** en español. Código fuente bajo licencia MIT.
+Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.3** en español. Código fuente bajo licencia MIT.
 
 > Proyecto personal no afiliado a Waveshare ni a Abbott. Utiliza LibreLinkUp, cuya API no es pública y puede cambiar. No sustituye el sensor, la aplicación oficial ni sus alarmas; verifica allí las lecturas antes de tomar decisiones de tratamiento.
 
@@ -33,7 +33,7 @@ Detalles y enlaces oficiales: [docs/MATERIALES.md](docs/MATERIALES.md).
 
 ## Instalar en Ubuntu 24.04
 
-Extrae el ZIP o clona el repositorio. Desde la raíz del proyecto:
+Extrae el ZIP. Desde la raíz del proyecto:
 
 ```bash
 sudo apt update
@@ -47,7 +47,7 @@ cd firmware
 
 Sustituye `/dev/ttyACM0` por el puerto detectado: puede ser `/dev/ttyUSB0`. La primera compilación descarga dependencias. Si falta permiso para acceder al puerto, ejecuta `sudo usermod -aG dialout "$USER"`, cierra sesión y vuelve a entrar.
 
-**Si ya tenías gluco_waveshare, no ejecutes `erase`:** al borrar toda la flash también desaparecen Wi-Fi, cuenta y ubicación. La tabla de particiones de 0.8.2 es la misma que la de 0.8.1. Para actualizar desde la raíz puedes usar `./actualizar.sh /dev/ttyACM0`, que solo ejecuta `upload`. Antes, haz una [copia de NVS](docs/COPIA_NVS.md) si necesitas proteger los ajustes ante un error de carga. Para Windows, pasos iniciales y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
+**Si ya tenías gluco_waveshare, no ejecutes `erase`:** al borrar toda la flash también desaparecen Wi-Fi, cuenta y ubicación. La tabla de particiones de 0.8.3 es la misma que la de 0.8.0. Para actualizar desde la raíz puedes usar `./actualizar.sh /dev/ttyACM0`, que solo ejecuta `upload`. Antes, haz una [copia de NVS](docs/COPIA_NVS.md) si necesitas proteger los ajustes ante un error de carga. Para Windows, pasos iniciales y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
 
 ## Primer arranque
 
@@ -68,22 +68,7 @@ El botón **Usuario** de glucosa cambia de persona sin pasar por Ajustes. Para r
 | `docs/` | Instalación, materiales, arquitectura y límites. |
 | `tests/` | Prueba auxiliar del procesamiento de glucosa. |
 
-Si modificas la web, ejecuta `python3 tools/embed_web.py` antes de compilar y sube tanto `web/` como el `web_assets.hpp` generado. Las dependencias están fijadas en `firmware/platformio.ini`.
-
-## Subirlo a GitHub
-
-Comprueba `git status --short` antes del commit: evita publicar volcados de flash, capturas de tu cuenta o archivos con contraseñas. El `.gitignore` excluye compilaciones y entornos virtuales. Crea primero en GitHub un repositorio vacío llamado `gluco_waveshare` y, desde la raíz local, ejecuta:
-
-```bash
-git init
-git add .
-git commit -m "Publicar gluco_waveshare 0.8.2"
-git branch -M main
-git remote add origin https://github.com/TU_USUARIO/gluco_waveshare.git
-git push -u origin main
-```
-
-Sustituye `TU_USUARIO`. Si ya tienes repositorio Git, conserva su historial y omite `git init` y `git remote add origin`.
+Si modificas la web, ejecuta `python3 tools/embed_web.py` antes de compilar y conserva tanto `web/` como el `web_assets.hpp` generado. Las dependencias están fijadas en `firmware/platformio.ini`.
 
 ## Licencias y fuentes
 
