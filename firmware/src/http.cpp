@@ -38,11 +38,11 @@ public:
         }
         memcpy(data + used, p, n); used += n; data[used] = 0;
         bytesSinceSleep += n;
-        if (bytesSinceSleep >= 4 * 1024) {
+        if (bytesSinceSleep >= 2 * 1024) {
             bytesSinceSleep = 0;
-            // vTaskDelay(1), no delay(0): deja ejecutar IDLE0 y el controlador
-            // Wi-Fi aun si el servidor entrega muchos fragmentos seguidos.
-            vTaskDelay(1);
+            // Limitar las ráfagas de copia desde PSRAM mientras el LCD RGB
+            // lee el mismo bus; la petición puede tardar algo más.
+            vTaskDelay(2);
         }
         return n;
     }

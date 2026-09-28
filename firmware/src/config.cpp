@@ -30,6 +30,12 @@ ConnectionChoice *libreJobChoices = nullptr;
 size_t libreJobCount = 0;
 char libreJobRegion[8]{};
 char libreJobError[220]{};
+enum class GeocodeJobState : uint8_t { Idle, Running, Ready, Failed };
+std::atomic<GeocodeJobState> geocodeJobState{GeocodeJobState::Idle};
+struct GeocodeChoice { char name[140]{}; float latitude=0, longitude=0; char timezone[32]{}; };
+GeocodeChoice geocodeChoices[8]{};
+size_t geocodeCount=0;
+char geocodeError[160]{};
 
 void fail(int code, const String &message) {
     Doc d(1000); d["message"] = message;
@@ -171,6 +177,11 @@ void getConfig() {
     d["wifi_connected"] = WiFi.status() == WL_CONNECTED;
     d["ip"] = WiFi.localIP().toString();
     d["portal_mode"] = mode.load() == PortalMode::WifiAccessPoint ? "wifi" : "online";
+    d["last_reset_reason"] = appResetReason();
+    const char *lastStage=appPreviousFaultStage(2);
+    if(!lastStage[0])lastStage=appPreviousFaultStage(1);
+    if(!lastStage[0])lastStage=appPreviousFaultStage(0);
+    d["last_fault_stage"] = lastStage;
     String json; serializeJson(d, json);
     web.send(200, "application/json", json);
 }
@@ -192,8 +203,7 @@ void wifiConnect() {
     transitionAt = millis() + 1500;
 }
 
-void libreLoginTask(void *argument) {
-    auto *credentials = static_cast<LibreCredentials *>(argument);
+void runLibreLogin(LibreCredentials *credentials) {
     auto *choices = static_cast<ConnectionChoice *>(heap_caps_calloc(
         MAX_CONNECTIONS, sizeof(ConnectionChoice), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     size_t count = 0; String resolved, error;
@@ -206,13 +216,18 @@ void libreLoginTask(void *argument) {
         strlcpy(libreJobError, error.c_str(), sizeof(libreJobError));
         libreJobState.store(LibreJobState::Failed, std::memory_order_release);
         Serial.printf("[PORTAL] Login LibreLinkUp finalizado con error: %s\n", libreJobError);
-        vTaskDelete(nullptr); return;
+        return;
     }
     libreJobChoices = choices;
     libreJobCount = count;
     strlcpy(libreJobRegion, resolved.c_str(), sizeof(libreJobRegion));
     libreJobState.store(LibreJobState::Ready, std::memory_order_release);
     Serial.printf("[PORTAL] Login LibreLinkUp correcto; %u usuario(s)\n", unsigned(count));
+}
+
+void libreLoginTask(void *argument) {
+    runLibreLogin(static_cast<LibreCredentials *>(argument));
+    // Tras retornar se han destruido los String y documentos temporales.
     vTaskDelete(nullptr);
 }
 
@@ -223,6 +238,9 @@ void libreLogin() {
     }
     if (libreJobState.load(std::memory_order_acquire) == LibreJobState::Running) {
         web.send(202, "application/json", "{\"state\":\"running\"}"); return;
+    }
+    if (geocodeJobState.load(std::memory_order_acquire) == GeocodeJobState::Running) {
+        fail(409, "Espera a que termine la búsqueda de localidad"); return;
     }
     auto *credentials = new(std::nothrow) LibreCredentials;
     if (!credentials) { fail(500, "Memoria insuficiente para iniciar sesión"); return; }
@@ -239,7 +257,9 @@ void libreLogin() {
     libreJobState.store(LibreJobState::Running, std::memory_order_release);
     if (libreJobChoices) { heap_caps_free(libreJobChoices); libreJobChoices = nullptr; }
     libreJobCount = 0; libreJobRegion[0] = libreJobError[0] = 0;
-    if (xTaskCreatePinnedToCore(libreLoginTask, "libre-login", 16384, credentials, 1, nullptr, 0) != pdPASS) {
+    // HTTPS corre en el otro núcleo y con prioridad 0; la interfaz conserva
+    // su núcleo y las tareas del sistema pueden adelantar a este trabajo.
+    if (xTaskCreatePinnedToCore(libreLoginTask, "libre-login", 18432, credentials, 0, nullptr, appWorkerCore()) != pdPASS) {
         delete credentials; libreJobState.store(LibreJobState::Failed, std::memory_order_release);
         strlcpy(libreJobError, "No se pudo crear la tarea HTTPS", sizeof(libreJobError));
         fail(500, libreJobError); return;
@@ -265,6 +285,40 @@ void libreStatus() {
     web.send(200, "application/json", json);
 }
 
+void runGeocode(const String &query) {
+    Doc result(28 * 1024);
+    appDiagnosticStage("Portal: geocodificación HTTPS");
+    const auto r=net::request("https://geocoding-api.open-meteo.com/v1/search?count=8&language=es&format=json&name="+
+                              net::encode(query),result);
+    if(r.status!=200){
+        strlcpy(geocodeError,r.error.c_str(),sizeof(geocodeError));
+        geocodeJobState.store(GeocodeJobState::Failed,std::memory_order_release);
+        return;
+    }
+    geocodeCount=0;
+    for(JsonObjectConst p:result["results"].as<JsonArrayConst>()){
+        if(geocodeCount>=8)break;
+        if(!p["latitude"].is<double>()||!p["longitude"].is<double>())continue;
+        auto &item=geocodeChoices[geocodeCount++];
+        String name=String(p["name"]|"");
+        if(*(p["admin1"]|""))name+=", "+String(p["admin1"]|"");
+        if(*(p["country"]|""))name+=", "+String(p["country"]|"");
+        strlcpy(item.name,name.c_str(),sizeof(item.name));
+        item.latitude=p["latitude"];item.longitude=p["longitude"];
+        String zone=p["timezone"]|"UTC";
+        strlcpy(item.timezone,(zone=="Europe/Madrid"||zone=="Atlantic/Canary")?zone.c_str():"UTC",
+                sizeof(item.timezone));
+    }
+    geocodeJobState.store(GeocodeJobState::Ready,std::memory_order_release);
+}
+
+void geocodeTask(void *argument) {
+    auto *query=static_cast<String *>(argument);
+    runGeocode(*query);
+    delete query;
+    vTaskDelete(nullptr);
+}
+
 void geocode() {
     Doc d(1500); if (!body(d, 800)) return;
     if (mode.load() != PortalMode::LocalNetwork || WiFi.status() != WL_CONNECTED) {
@@ -272,22 +326,39 @@ void geocode() {
     }
     String query = d["query"] | ""; query.trim();
     if (query.length() < 2 || query.length() > 80) { fail(400, "Escribe una localidad"); return; }
-    Doc result(28 * 1024);
-    auto r = net::request("https://geocoding-api.open-meteo.com/v1/search?count=8&language=es&format=json&name=" + net::encode(query), result);
-    if (r.status != 200) { fail(502, r.error); return; }
-    Doc out(12000); auto list = out.createNestedArray("locations");
-    for (JsonObjectConst p : result["results"].as<JsonArrayConst>()) {
-        if (!p["latitude"].is<double>() || !p["longitude"].is<double>()) continue;
-        auto item = list.createNestedObject();
-        String name = String(p["name"] | "");
-        if (*(p["admin1"] | "")) name += ", " + String(p["admin1"] | "");
-        if (*(p["country"] | "")) name += ", " + String(p["country"] | "");
-        item["name"] = name; item["latitude"] = p["latitude"]; item["longitude"] = p["longitude"];
-        String zone = p["timezone"] | "UTC";
-        item["timezone"] = (zone == "Europe/Madrid" || zone == "Atlantic/Canary") ? zone : "UTC";
+    if(geocodeJobState.load(std::memory_order_acquire)==GeocodeJobState::Running){
+        web.send(202,"application/json","{\"state\":\"running\"}");return;
     }
-    String json; serializeJson(out, json);
-    web.send(200, "application/json", json);
+    if(libreJobState.load(std::memory_order_acquire)==LibreJobState::Running){
+        fail(409,"Espera a que termine el inicio de sesión LibreLinkUp");return;
+    }
+    String *job=new(std::nothrow) String(query);
+    if(!job){fail(500,"Memoria insuficiente para buscar la localidad");return;}
+    geocodeCount=0;geocodeError[0]=0;
+    geocodeJobState.store(GeocodeJobState::Running,std::memory_order_release);
+    if(xTaskCreatePinnedToCore(geocodeTask,"geocode",14336,job,0,nullptr,appWorkerCore())!=pdPASS){
+        delete job;
+        geocodeJobState.store(GeocodeJobState::Failed,std::memory_order_release);
+        fail(500,"No se pudo crear la tarea meteorológica");return;
+    }
+    web.send(202,"application/json","{\"state\":\"running\"}");
+}
+
+void geocodeStatus(){
+    if(!allowed())return;
+    const auto state=geocodeJobState.load(std::memory_order_acquire);
+    if(state==GeocodeJobState::Idle){fail(409,"No hay búsqueda de localidad en curso");return;}
+    if(state==GeocodeJobState::Running){web.send(202,"application/json","{\"state\":\"running\"}");return;}
+    if(state==GeocodeJobState::Failed){fail(422,geocodeError);return;}
+    Doc out(6000);out["state"]="ready";auto list=out.createNestedArray("locations");
+    for(size_t i=0;i<geocodeCount;++i){
+        auto item=list.createNestedObject();
+        item["name"]=geocodeChoices[i].name;
+        item["latitude"]=geocodeChoices[i].latitude;
+        item["longitude"]=geocodeChoices[i].longitude;
+        item["timezone"]=geocodeChoices[i].timezone;
+    }
+    String json;serializeJson(out,json);web.send(200,"application/json",json);
 }
 
 void save() {
@@ -340,6 +411,7 @@ void registerRoutes() {
     web.on("/api/libre/login", HTTP_POST, libreLogin);
     web.on("/api/libre/status", HTTP_GET, libreStatus);
     web.on("/api/geocode", HTTP_POST, geocode);
+    web.on("/api/geocode/status", HTTP_GET, geocodeStatus);
     web.on("/api/save", HTTP_POST, save);
     web.on("/api/reset", HTTP_POST, reset);
     web.onNotFound([] {

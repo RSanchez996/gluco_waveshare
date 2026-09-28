@@ -143,7 +143,15 @@ $("loginLibre").addEventListener("click",async()=>{
 $("searchCity").addEventListener("click",async()=>{
   if(busy)return;busy=true;$("searchCity").disabled=true;$("locationMessage").textContent="Buscando...";
   try{
-    const r=await api("/api/geocode",{query:$("citySearch").value.trim()});$("locations").replaceChildren();
+    await api("/api/geocode",{query:$("citySearch").value.trim()});
+    let r=null;
+    for(let elapsed=1;elapsed<=45;elapsed++){
+      await wait(1000);r=await api("/api/geocode/status");
+      if(r.state!=="running")break;
+      $("locationMessage").textContent=`Buscando localidad... ${elapsed} s`;
+    }
+    if(!r||r.state!=="ready")throw Error("La búsqueda no respondió en 45 segundos. Inténtalo de nuevo.");
+    $("locations").replaceChildren();
     for(const l of r.locations||[]){
       const b=document.createElement("button");b.type="button";b.className="choice";b.innerHTML="<strong></strong><small></small>";
       b.querySelector("strong").textContent=l.name;b.querySelector("small").textContent=`${l.latitude}, ${l.longitude} - ${l.timezone}`;
@@ -182,6 +190,10 @@ $("libre_region").addEventListener("change",()=>{if(cfg.libre_region!==$("libre_
 async function start(){
   try{
     cfg=await api("/api/config");$("version").textContent=`Versión ${cfg.version}`;
+    if(cfg.last_reset_reason?.includes("WDT")||cfg.last_reset_reason==="Excepción"){
+      const stage=cfg.last_fault_stage?` · fase: ${cfg.last_fault_stage}`:"";
+      message(`Último reinicio: ${cfg.last_reset_reason}${stage}`,true);
+    }
     for(const id of ["ssid","libre_user","libre_region","libre_version","city","latitude","longitude","timezone"])if($(id))$(id).value=cfg[id]??"";
     if(cfg.has_wifi_password)$("wifi_password").placeholder="Guardada; deja vacío para conservar";
     if(cfg.has_libre_password)$("libre_password").placeholder="Guardada; deja vacío para conservar";

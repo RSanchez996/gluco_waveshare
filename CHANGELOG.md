@@ -1,5 +1,26 @@
 # Cambios
 
+## 0.8.2
+
+- El login LibreLinkUp del portal baja de prioridad 1 a 0; la aplicación
+  detecta el núcleo de Arduino/LVGL y fija todas las tareas HTTPS al otro.
+  La pila Wi-Fi conserva preferencia. Las transferencias HTTP ceden CPU cada
+  2 KiB durante dos ticks de FreeRTOS, con menor presión sobre PSRAM.
+- La búsqueda de localidades deja de bloquear el bucle del portal y LVGL:
+  petición asíncrona en el núcleo de trabajo/prioridad 0 y consulta de estado
+  desde el móvil.
+- Las tareas temporales liberan sus documentos y cadenas antes de llamar a
+  `vTaskDelete()`, evitando pérdidas de memoria entre varios intentos.
+- La lista de usuarios se reescribe en NVS solo cuando su contenido cambia,
+  evitando escrituras de flash innecesarias tras cada arranque.
+- El modo seguro cuenta únicamente reinicios por watchdog o excepción;
+  varios encendidos manuales rápidos ya no lo activan.
+- El portal informa del motivo y fase del último reinicio por WDT. La nueva
+  guía permite guardar una copia de NVS antes de actualizar. `actualizar.sh`
+  ejecuta únicamente `upload`; la tabla de particiones no cambia.
+- La causa precisa de un reinicio o pérdida de datos anterior no se puede
+  determinar solo con el código. No se ha validado esta versión sobre hardware.
+
 ## 0.8.1
 
 - La gráfica táctil marca la medida más cercana al punto elegido, con una línea

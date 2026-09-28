@@ -22,17 +22,16 @@ cd firmware
 ./.build-venv/bin/pio device list
 ```
 
-Sustituye `/dev/ttyACM0` en los comandos siguientes si `device list` muestra `/dev/ttyUSB0` u otro puerto. Para una placa **nueva con firmware de fábrica**, si quieres una instalación completamente limpia o vienes de una **tabla de particiones distinta**, borra la flash **una sola vez** y carga el programa:
+Sustituye `/dev/ttyACM0` si `device list` muestra `/dev/ttyUSB0` u otro puerto. Para instalar o actualizar, el comando habitual es **solo**:
 
 ```bash
-./.build-venv/bin/pio run -t erase --upload-port /dev/ttyACM0
 ./.build-venv/bin/pio run -t upload --upload-port /dev/ttyACM0
 ```
 
-**Borrar la flash destruye el Wi-Fi, las credenciales y cualquier otra información guardada en esa placa.** Si ya tienes gluco_waveshare funcionando y solo actualizas esta versión, ejecuta únicamente:
+**No uses `erase` para actualizar:** destruye el Wi-Fi, las credenciales y cualquier otra información guardada. Si la placa ya tiene datos configurados, haz antes una [copia de NVS](COPIA_NVS.md). Esta versión conserva las particiones de 0.8.1. Solo si decides hacer una instalación completamente limpia desde una tabla incompatible y aceptas perder los datos se ejecuta el borrado total, antes del `upload`:
 
 ```bash
-./.build-venv/bin/pio run -t upload --upload-port /dev/ttyACM0
+./.build-venv/bin/pio run -t erase --upload-port /dev/ttyACM0
 ```
 
 Si aparece `Permission denied` para el puerto serie:

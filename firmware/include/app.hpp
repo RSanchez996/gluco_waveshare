@@ -7,7 +7,7 @@
 #include <atomic>
 #include "core.hpp"
 
-constexpr const char *APP_VERSION = "0.8.1";
+constexpr const char *APP_VERSION = "0.8.2";
 constexpr size_t MAX_CONNECTIONS = 12;
 enum class PortalMode : uint8_t { Off, WifiAccessPoint, WaitingForWifi, LocalNetwork };
 struct Config {
@@ -76,5 +76,6 @@ const char *weatherText(int code);
 void markPlannedRestart();
 const char *appResetReason();
 uint32_t appBootCount();
+int appWorkerCore();
 void appDiagnosticStage(const char *stage);
 const char *appPreviousFaultStage(unsigned index);

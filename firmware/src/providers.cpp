@@ -72,6 +72,16 @@ size_t parseConnections(JsonArrayConst source,ConnectionChoice *out,size_t capac
     }
     return count;
 }
+uint64_t connectionSignature(const ConnectionChoice *items,size_t count){
+    uint64_t hash=1469598103934665603ULL;
+    for(size_t i=0;i<count;++i){
+        for(const char *p=items[i].id;*p;++p){hash^=uint8_t(*p);hash*=1099511628211ULL;}
+        hash^=0xff;hash*=1099511628211ULL;
+        for(const char *p=items[i].name;*p;++p){hash^=uint8_t(*p);hash*=1099511628211ULL;}
+        hash^=0xfe;hash*=1099511628211ULL;
+    }
+    return hash;
+}
 void add(AppState &state,int glucose,int64_t epoch,const char *direction){
     if(!gluco::validEpoch(epoch,time(nullptr))||gluco::range(glucose)==gluco::Range::Invalid)return;
     int64_t newest=0;for(size_t i=0;i<state.pointCount;++i)newest=std::max(newest,state.points[i].epoch);
@@ -127,10 +137,14 @@ uint32_t LibreClient::listConnections(AppState &state){
         text(state.connectionsError,r.error.isEmpty()?"No se pudieron actualizar los usuarios compartidos":r.error.c_str());
         return std::max<uint32_t>(120,r.retrySeconds);
     }
+    const size_t previousCount=state.connectionCount;
+    const uint64_t previousSignature=connectionSignature(state.connections,previousCount);
     const size_t count=parseConnections(d["data"].as<JsonArrayConst>(),state.connections,MAX_CONNECTIONS);
     if(!count){text(state.connectionsError,"La cuenta no tiene usuarios compartidos en LibreLinkUp");return 300;}
     state.connectionCount=count;state.connectionsFetched=time(nullptr);state.connectionsError[0]=0;
-    connectionCacheSave(state);return 6*60*60;
+    if(count!=previousCount||connectionSignature(state.connections,count)!=previousSignature)
+        connectionCacheSave(state);
+    return 6*60*60;
 }
 uint32_t LibreClient::read(AppState &state){
     if(config.libreUser.isEmpty()||config.patientId.isEmpty()){text(state.glucoseError,"Configura LibreLinkUp y selecciona un usuario");return 300;}

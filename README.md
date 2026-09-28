@@ -1,6 +1,6 @@
 # gluco_waveshare
 
-Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.1** en español. Código fuente bajo licencia MIT.
+Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.2** en español. Código fuente bajo licencia MIT.
 
 > Proyecto personal no afiliado a Waveshare ni a Abbott. Utiliza LibreLinkUp, cuya API no es pública y puede cambiar. No sustituye el sensor, la aplicación oficial ni sus alarmas; verifica allí las lecturas antes de tomar decisiones de tratamiento.
 
@@ -47,7 +47,7 @@ cd firmware
 
 Sustituye `/dev/ttyACM0` por el puerto detectado: puede ser `/dev/ttyUSB0`. La primera compilación descarga dependencias. Si falta permiso para acceder al puerto, ejecuta `sudo usermod -aG dialout "$USER"`, cierra sesión y vuelve a entrar.
 
-**Al actualizar desde gluco_waveshare, no borres la flash:** `upload` conserva el Wi-Fi, la cuenta y la ubicación. Si partes de una imagen con otra tabla de particiones, la guía explica cuándo borrar toda la memoria. Para Windows, pasos de la primera carga y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
+**Si ya tenías gluco_waveshare, no ejecutes `erase`:** al borrar toda la flash también desaparecen Wi-Fi, cuenta y ubicación. La tabla de particiones de 0.8.2 es la misma que la de 0.8.1. Para actualizar desde la raíz puedes usar `./actualizar.sh /dev/ttyACM0`, que solo ejecuta `upload`. Antes, haz una [copia de NVS](docs/COPIA_NVS.md) si necesitas proteger los ajustes ante un error de carga. Para Windows, pasos iniciales y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
 
 ## Primer arranque
 
@@ -77,7 +77,7 @@ Comprueba `git status --short` antes del commit: evita publicar volcados de flas
 ```bash
 git init
 git add .
-git commit -m "Publicar gluco_waveshare 0.8.1"
+git commit -m "Publicar gluco_waveshare 0.8.2"
 git branch -M main
 git remote add origin https://github.com/TU_USUARIO/gluco_waveshare.git
 git push -u origin main

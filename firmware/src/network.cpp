@@ -259,10 +259,10 @@ void task(void *) {
 }
 
 void networkStart() {
-    // Wi-Fi y el controlador RGB trabajan principalmente en CPU0. TLS y JSON
-    // corren en CPU1 a prioridad 0, compartida con IDLE1, para no impedir
-    // que el watchdog de las tareas idle siga recibiendo tiempo de CPU.
-    if (xTaskCreatePinnedToCore(task, "data", 18432, nullptr, 0, nullptr, 1) != pdPASS) {
+    // LCD, LVGL y servidor local viven en el núcleo del loop de Arduino.
+    // TLS/JSON se fijan al otro con prioridad 0 y pausas explícitas.
+    // Si comparten núcleo con Wi-Fi, la pila de radio tiene preferencia.
+    if (xTaskCreatePinnedToCore(task, "data", 18432, nullptr, 0, nullptr, appWorkerCore()) != pdPASS) {
         Serial.println("[FATAL] No se pudo crear la tarea de red");
         while (true) delay(1000);
     }

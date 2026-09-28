@@ -26,7 +26,12 @@ modo seguro.
 ## Tareas
 
 - El bucle principal es el unico que llama a LVGL y al servidor web temporal.
-- Una tarea fijada al núcleo 1 con prioridad 0 obtiene glucosa y clima.
+- El bucle de Arduino inicializa LCD y LVGL y sirve el portal. En el arranque
+  se detecta su núcleo y las tareas HTTPS (glucosa/clima, login y
+  geocodificación) se fijan al otro con prioridad 0. La pila Wi-Fi tiene
+  mayor prioridad; los trabajos
+  periódicos se espacian y la lectura HTTP cede CPU cada 2 KiB. Es normal que
+  las consultas tarden más que antes.
 - `stateMutex` protege una instantánea de solo lectura para la interfaz.
 - `httpMutex` impide dos conexiones TLS simultaneas.
 - Los documentos JSON grandes y el buffer HTTP se reservan en PSRAM.
@@ -77,6 +82,12 @@ responde inmediatamente; el móvil consulta `/api/libre/status` una vez por
 segundo. El servidor local, LVGL y el QR continúan activos durante la
 negociación TLS. La sesión resultante se mantiene únicamente en RAM y se
 reutiliza mientras el servidor no la rechace.
+
+La geocodificación también responde inmediatamente y se consulta con
+`/api/geocode/status`; no realiza HTTPS desde el bucle LVGL. Ambos trabajos
+comparten el mutex HTTPS y no hacen llamadas LVGL desde sus tareas. Las tareas
+temporales retornan de sus funciones de trabajo antes de borrarse para liberar
+documentos JSON y cadenas dinámicas.
 
 ## Histórico de 8 horas y usuarios
 

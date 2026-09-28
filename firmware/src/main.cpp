@@ -5,6 +5,7 @@
 #include <esp_system.h>
 #include <Preferences.h>
 Config config;AppState *sharedState=nullptr;SemaphoreHandle_t stateMutex=nullptr;SemaphoreHandle_t storageMutex=nullptr;SemaphoreHandle_t httpMutex=nullptr;QueueHandle_t patientQueue=nullptr;
+int arduinoCore=1;
 RTC_DATA_ATTR uint32_t bootMagic=0,rapidBoots=0,bootCount=0;
 RTC_DATA_ATTR char lastFaultStage[64]{};
 namespace {
@@ -15,7 +16,9 @@ bool persistDiagnosticStage(const char *stage){
     return strcmp(stage,"Iniciando Wi-Fi")==0 ||
            strcmp(stage,"Libre: login HTTPS")==0 ||
            strcmp(stage,"Libre: gráfica HTTPS")==0 ||
-           strcmp(stage,"Libre: procesando datos")==0;
+           strcmp(stage,"Libre: procesando datos")==0 ||
+           strcmp(stage,"Libre: analizando JSON")==0 ||
+           strcmp(stage,"Portal: geocodificación HTTPS")==0;
 }
 void recordFaultBoot(){
     Preferences p;
@@ -67,16 +70,21 @@ const char *appResetReason(){
     }
 }
 uint32_t appBootCount(){return bootCount;}
+int appWorkerCore(){return arduinoCore==0?1:0;}
 namespace {
 void halt(const char *message){Serial.printf("[FATAL] %s\n",message);Serial.println("El error queda detenido para poder leerlo. Reinicia despues de corregirlo.");Serial.flush();while(true)delay(1000);}
 void safeMode(){lv_obj_clean(lv_scr_act());lv_obj_set_style_bg_color(lv_scr_act(),lv_color_hex(0x3A1118),0);lv_obj_t *label=lv_label_create(lv_scr_act());String info="MODO SEGURO\nCausa: ";info+=appResetReason();info+="\n\nFase al reiniciarse:";for(unsigned i=0;i<3;++i)if(faultStages[i].length())info+="\nIntento "+String(i+1)+": "+faultStages[i];info+="\n\nAnota estas fases. Apaga por completo 10 segundos\ny vuelve a encender.";lv_label_set_text(label,info.c_str());lv_obj_set_width(label,730);lv_obj_set_style_text_font(label,&fonts::montserrat20,0);lv_obj_set_style_text_color(label,lv_color_hex(0xFFFFFF),0);lv_obj_set_style_text_align(label,LV_TEXT_ALIGN_CENTER,0);lv_obj_center(label);while(true){lv_timer_handler();delay(5);}}
 }
 void setup(){
+    arduinoCore=xPortGetCoreID();
     Serial.begin(115200);delay(800);lastResetReason=esp_reset_reason();if(bootMagic!=0x47574C43){bootMagic=0x47574C43;rapidBoots=0;bootCount=0;}++rapidBoots;++bootCount;Serial.printf("\n[BOOT 1/6] Gluco Waveshare %s | intento rápido %u\n",APP_VERSION,rapidBoots);Serial.printf("Chip %s | flash %u MB | PSRAM %u MB | reset %d (%s) | arranque %u\n",ESP.getChipModel(),ESP.getFlashChipSize()/1048576U,ESP.getPsramSize()/1048576U,int(lastResetReason),appResetReason(),bootCount);
+    Serial.printf("[CPU] Interfaz %d | HTTPS %d (prioridad 0)\n",arduinoCore,appWorkerCore());
     if(!psramFound()||ESP.getPsramSize()<7*1024*1024)halt("No se detectan los 8 MB de PSRAM OPI");
     recordFaultBoot();
     storageMutex=xSemaphoreCreateMutex();stateMutex=xSemaphoreCreateMutex();httpMutex=xSemaphoreCreateMutex();patientQueue=xQueueCreate(1,sizeof(PatientSelection));sharedState=static_cast<AppState *>(heap_caps_calloc(1,sizeof(AppState),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));if(!storageMutex||!stateMutex||!httpMutex||!patientQueue||!sharedState)halt("No se pudo reservar memoria de estado");
-    displayInit();if(rapidBoots>=3||faultBoots>=3)safeMode();appDiagnosticStage("Cargando ajustes");Serial.println("[BOOT 4/6] Leyendo configuración NVS");configLoad();uiInit();
+    // Los reinicios manuales o de alimentación no indican un WDT. El modo
+    // seguro se activa solo tras fallos consecutivos realmente registrados.
+    displayInit();if(faultBoots>=3)safeMode();appDiagnosticStage("Cargando ajustes");Serial.println("[BOOT 4/6] Leyendo configuración NVS");configLoad();uiInit();
     // Pantalla alimentada por USB: evitar la latencia del modem-sleep en HTTPS.
     // No modifica la persistencia NVS ni fuerza reconexiones durante una consulta.
     WiFi.persistent(false);WiFi.setSleep(false);WiFi.setAutoReconnect(true);WiFi.mode(WIFI_STA);
