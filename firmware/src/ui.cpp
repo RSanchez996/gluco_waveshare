@@ -11,6 +11,7 @@ enum class PendingPage{None,Home,Clock,Users,Setup,CloseSetup};PendingPage pendi
 lv_obj_t *timeLabel=nullptr,*dateLabel=nullptr,*weatherLabel=nullptr,*weatherSummary=nullptr,*homeIcon=nullptr,*glucoseLabel=nullptr,*detailLabel=nullptr,*errorLabel=nullptr,*graph=nullptr,*arrow=nullptr;
 lv_obj_t *glucosePanel=nullptr,*glucoseAccent=nullptr;
 lv_obj_t *clockBig=nullptr,*clockDate=nullptr,*clockWeather=nullptr,*clockSummary=nullptr,*clockIcon=nullptr,*hoursBox=nullptr,*hoursTab=nullptr,*daysTab=nullptr,*setupInfo=nullptr,*setupQr=nullptr;
+int64_t selectedGraphEpoch=0;
 weathericons::Icon homeGlyph{},clockGlyph{},hourGlyphs[6]{},dayGlyphs[4]{};
 enum class ForecastView{Hours,Days};ForecastView forecastView=ForecastView::Hours;
 int64_t renderedWeather=-1,renderedGlucose=-1,renderedMinute=-1,renderedGraphBucket=-1,renderedLatestEpoch=-1;
@@ -97,22 +98,67 @@ void drawGraph(lv_event_t *e){
         lv_area_t area{lv_coord_t(px-radius),lv_coord_t(yy-radius),lv_coord_t(px+radius),lv_coord_t(yy+radius)};
         lv_draw_rect(ctx,&dot,&area);
     }
+    if(!selectedGraphEpoch)return;
+    const gluco::Point *selected=nullptr;
+    for(size_t i=0;i<snapshot.pointCount;++i){
+        if(snapshot.points[i].epoch==selectedGraphEpoch){selected=&snapshot.points[i];break;}
+    }
+    if(!selected||selected->epoch<now-gluco::kHistorySeconds||selected->epoch>now)return;
+    const int sx=int(std::lround(x+gluco::graphX(selected->epoch,now,w)));
+    const int sy=int(std::lround(py(selected->glucose)));
+    drawLine(ctx,sx,y,sx,y+h,theme::Blue,2);
+    lv_draw_rect_dsc_t marker;lv_draw_rect_dsc_init(&marker);
+    marker.bg_color=c(rangeColor(selected->glucose));marker.radius=LV_RADIUS_CIRCLE;
+    lv_area_t pointArea{lv_coord_t(sx-6),lv_coord_t(sy-6),lv_coord_t(sx+6),lv_coord_t(sy+6)};
+    lv_draw_rect(ctx,&marker,&pointArea);
+    time_t timestamp=selected->epoch;tm local{};localtime_r(&timestamp,&local);
+    char stamp[20]="--/-- --:--";strftime(stamp,sizeof(stamp),"%d/%m %H:%M",&local);
+    char detail[48];snprintf(detail,sizeof(detail),"%s   %d mg/dL",stamp,int(selected->glucose));
+    const int tooltipX=std::max(x+190,std::min(sx-112,bounds.x2-239));
+    lv_draw_rect_dsc_t bubble;lv_draw_rect_dsc_init(&bubble);
+    bubble.bg_color=c(theme::Button);bubble.bg_opa=LV_OPA_COVER;bubble.radius=7;
+    lv_area_t tooltip{lv_coord_t(tooltipX),lv_coord_t(bounds.y1+3),lv_coord_t(tooltipX+234),lv_coord_t(bounds.y1+27)};
+    lv_draw_rect(ctx,&bubble,&tooltip);
+    drawText(ctx,tooltipX+8,bounds.y1+5,218,detail,theme::Ink,LV_TEXT_ALIGN_CENTER);
+}
+void chooseGraphPoint(lv_event_t *event){
+    if(!snapshot.pointCount)return;
+    lv_point_t touch{};lv_indev_t *indev=lv_indev_get_act();
+    if(!indev)return;
+    lv_indev_get_point(indev,&touch);
+    lv_area_t bounds;lv_obj_get_coords(lv_event_get_target(event),&bounds);
+    const int x=bounds.x1+45,y=bounds.y1+30;
+    const int w=lv_area_get_width(&bounds)-62,h=lv_area_get_height(&bounds)-67;
+    if(touch.x<x||touch.x>x+w||touch.y<y||touch.y>y+h)return;
+    const int64_t now=time(nullptr);
+    int bestDistance=w+1;int64_t closestEpoch=0;
+    for(size_t i=0;i<snapshot.pointCount;++i){
+        const auto &p=snapshot.points[i];
+        if(p.epoch<now-gluco::kHistorySeconds||p.epoch>now)continue;
+        const int px=x+int(std::lround(gluco::graphX(p.epoch,now,w)));
+        const int distance=std::abs(px-touch.x);
+        if(distance<bestDistance){bestDistance=distance;closestEpoch=p.epoch;}
+    }
+    if(closestEpoch&&closestEpoch!=selectedGraphEpoch){selectedGraphEpoch=closestEpoch;lv_obj_invalidate(graph);}
 }
 void drawArrow(lv_event_t *e){if(!snapshot.pointCount)return;const char *d=snapshot.direction;double angle=0;bool known=true,twice=false;if(!strcmp(d,"Flat"))angle=0;else if(!strcmp(d,"FortyFiveUp"))angle=-.7854;else if(!strcmp(d,"FortyFiveDown"))angle=.7854;else if(!strcmp(d,"SingleUp")||!strcmp(d,"DoubleUp")){angle=-1.5708;twice=!strcmp(d,"DoubleUp");}else if(!strcmp(d,"SingleDown")||!strcmp(d,"DoubleDown")){angle=1.5708;twice=!strcmp(d,"DoubleDown");}else known=false;lv_area_t area;lv_obj_get_coords(lv_event_get_target(e),&area);auto *ctx=lv_event_get_draw_ctx(e);uint32_t color=rangeColor(snapshot.points[snapshot.pointCount-1].glucose);if(!known){drawText(ctx,area.x1+20,area.y1+22,55,"--",theme::Muted);return;}for(int i=0;i<(twice?2:1);++i){double cx=area.x1+(twice?25+i*27:40),cy=area.y1+35,dx=cos(angle),dy=sin(angle),tx=cx+23*dx,ty=cy+23*dy;drawLine(ctx,cx-20*dx,cy-20*dy,tx,ty,color,5);drawLine(ctx,tx,ty,tx-12*dx-9*dy,ty-12*dy+9*dx,color,5);drawLine(ctx,tx,ty,tx-12*dx+9*dy,ty-12*dy-9*dx,color,5);}}
 // Un callback táctil no debe destruir el propio botón aún en procesamiento.
 // uiTick aplica la transición desde el bucle principal, fuera del evento LVGL.
 void settings(lv_event_t *){pendingPage=PendingPage::Setup;}
 void sleepHomeBackground(lv_event_t *event){
-    // Solo el fondo de la vista principal apaga la retroiluminación.
-    // Los botones no propagan su clic a la pantalla.
-    if(page==Page::Home&&lv_event_get_target(event)==lv_scr_act())displaySleep();
+    // La zona superior apaga la retroiluminación; la gráfica queda reservada
+    // para inspeccionar medidas y los botones mantienen sus acciones.
+    if(page!=Page::Home||lv_event_get_target(event)!=lv_scr_act()||!graph)return;
+    lv_indev_t *indev=lv_indev_get_act();lv_point_t touch{};
+    if(indev){lv_indev_get_point(indev,&touch);lv_area_t bounds;lv_obj_get_coords(graph,&bounds);
+        if(touch.y<bounds.y1)displaySleep();}
 }
 void clockPage(lv_event_t *);void homePage(lv_event_t *);void usersPage(lv_event_t *);
 void updateForecast();
 void requestHours(lv_event_t *){forecastView=ForecastView::Hours;updateForecast();}
 void requestDays(lv_event_t *){forecastView=ForecastView::Days;updateForecast();}
 void buildHome(){
-    page=Page::Home;resetRenderCache();lv_obj_clean(lv_scr_act());base(lv_scr_act());
+    page=Page::Home;selectedGraphEpoch=0;resetRenderCache();lv_obj_clean(lv_scr_act());base(lv_scr_act());
     lv_obj_add_flag(lv_scr_act(),LV_OBJ_FLAG_CLICKABLE);
     timeLabel=label(lv_scr_act(),26,12,210,"--:--",&fonts::montserrat48);
     dateLabel=label(lv_scr_act(),28,70,380,"Esperando hora",&fonts::montserrat16,theme::Muted);
@@ -157,8 +203,9 @@ void buildHome(){
     lv_obj_set_style_bg_color(graph,c(theme::Card),0);
     lv_obj_set_style_border_width(graph,1,0);lv_obj_set_style_border_color(graph,c(theme::Grid),0);lv_obj_set_style_radius(graph,18,0);
     lv_obj_set_style_pad_all(graph,0,0);lv_obj_clear_flag(graph,LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(graph,LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(graph,LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(graph,drawGraph,LV_EVENT_DRAW_MAIN,nullptr);
+    lv_obj_add_event_cb(graph,chooseGraphPoint,LV_EVENT_CLICKED,nullptr);
     button(lv_scr_act(),18,420,304,"Reloj y clima",clockPage);
     button(lv_scr_act(),338,420,304,"Usuario",usersPage);
     lv_obj_t *gear=button(lv_scr_act(),696,420,86,"",settings);
@@ -195,6 +242,7 @@ void selectUser(lv_event_t *event){
     const size_t index=size_t(reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
     if(index>=snapshot.connectionCount)return;
     if(requestPatientSelection(snapshot.connections[index].id,snapshot.connections[index].name)){
+        selectedGraphEpoch=0;
         strlcpy(pendingPatientId,snapshot.connections[index].id,sizeof(pendingPatientId));
         pendingPage=PendingPage::Home;
     }
@@ -405,6 +453,11 @@ void uiTick(){
     const uint32_t requestElapsed=snapshot.glucoseRequestStartedMs ? millis()-snapshot.glucoseRequestStartedMs : 0;
     const int64_t requestStep=snapshot.glucoseRequestStartedMs ? requestElapsed/15000 : -1;
     const bool chartChanged=renderedPoints!=snapshot.pointCount||renderedLatestEpoch!=latestEpoch||renderedLatestValue!=latestValue;
+    if(chartChanged&&selectedGraphEpoch){
+        bool found=false;
+        for(size_t i=0;i<snapshot.pointCount;++i)if(snapshot.points[i].epoch==selectedGraphEpoch){found=true;break;}
+        if(!found)selectedGraphEpoch=0;
+    }
     const bool weatherChanged=renderedWeather!=snapshot.weatherFetched||strcmp(renderedWeatherError,snapshot.weatherError);
     if(page==Page::Home){
         if(minuteChanged)setClock(timeLabel,dateLabel);

@@ -1,17 +1,17 @@
 # gluco_waveshare
 
-Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.0** en español. Código fuente bajo licencia MIT.
+Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.1** en español. Código fuente bajo licencia MIT.
 
 > Proyecto personal no afiliado a Waveshare ni a Abbott. Utiliza LibreLinkUp, cuya API no es pública y puede cambiar. No sustituye el sensor, la aplicación oficial ni sus alarmas; verifica allí las lecturas antes de tomar decisiones de tratamiento.
 
 ## Funciones
 
-- Glucosa, flecha de tendencia y gráfica de **8 horas** con horas reales. Colores: rojo <70; verde 70–180; amarillo >180–240; naranja >240 mg/dL.
+- Glucosa, flecha de tendencia y gráfica de **8 horas** con horas reales. Toca dentro de la gráfica para destacar la medición más cercana y consultar su fecha, hora y valor. Colores: rojo <70; verde 70–180; amarillo >180–240; naranja >240 mg/dL.
 - Selector de personas que comparten lecturas con la **cuenta receptora LibreLinkUp**, accesible desde la pantalla de glucosa.
 - Reloj, fecha, clima actual, sensación térmica, máxima y mínima; previsión de seis horas o cuatro días.
 - Configuración desde el móvil con dos QR: Wi-Fi temporal primero, servicios a través de la red doméstica después.
 - Ajustes y selección del usuario guardados en NVS tras el apagado. Peticiones de clima y glucosa ordenadas, como máximo una por servicio cada dos minutos.
-- Tema oscuro. En glucosa, toca fuera de los botones para apagar la retroiluminación; otro toque la enciende. El engranaje abre Ajustes.
+- Tema oscuro. En glucosa, toca la zona **por encima de la gráfica** para apagar la retroiluminación; otro toque la enciende. El engranaje abre Ajustes.
 - Interfaz oscura con tarjetas azuladas, lectura destacada con acento del color
   de glucosa, umbrales punteados en la gráfica y pronóstico más legible. Se
   conservan la distribución y los botones de la versión 0.7.1.
@@ -77,7 +77,7 @@ Comprueba `git status --short` antes del commit: evita publicar volcados de flas
 ```bash
 git init
 git add .
-git commit -m "Publicar gluco_waveshare 0.8.0"
+git commit -m "Publicar gluco_waveshare 0.8.1"
 git branch -M main
 git remote add origin https://github.com/TU_USUARIO/gluco_waveshare.git
 git push -u origin main

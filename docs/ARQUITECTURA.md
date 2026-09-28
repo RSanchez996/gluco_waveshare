@@ -12,14 +12,16 @@ La inicialización conserva la secuencia del ejemplo oficial de Waveshare
 5. LVGL 8.4 con un buffer interno de 18 líneas.
 
 Se usa un framebuffer RGB y el buffer de rebote de diez líneas del perfil
-Waveshare v1.0.4. Antes de iniciar el panel se baja el reloj RGB de 16 a 14 MHz
+Waveshare v1.0.4. Antes de iniciar el panel se baja el reloj RGB de 16 a 12 MHz
 para dar margen a PSRAM cuando se procesan las respuestas HTTPS.
 
 ## Arranque por fases
 
 La aplicación no activa Wi-Fi antes de que LCD, táctil y LVGL estén listos. Cada
-fase se imprime por serie. Los fallos controlados quedan detenidos; tres reinicios
-rapidos activan una pantalla de modo seguro.
+fase se imprime por serie. La última fase crítica se conserva en memoria RTC
+durante los reinicios WDT, sin escrituras periódicas en flash. Los fallos
+controlados quedan detenidos; tres reinicios rápidos activan una pantalla de
+modo seguro.
 
 ## Tareas
 
@@ -90,14 +92,16 @@ la gráfica se reconstruye desde el proveedor. La selección espera a que la tar
 termine la petición HTTPS anterior; la interfaz sigue atendiendo el tacto.
 El reloj continúa durante la espera y la consulta muestra segundos transcurridos.
 
-## Interfaz v0.8.0
+## Interfaz v0.8.1
 
 La gráfica de ocho horas convierte cada marca del eje horizontal a la hora
 local del reloj. La portada tiene botones de clima y usuario y un engranaje
-para Ajustes. Tocar una zona libre apaga solo la retroiluminación cuando se
-muestra la portada; no hay acción de apagado en el reloj. La tarjeta del clima
+para Ajustes. Tocar la zona superior, por encima de la gráfica, apaga solo la
+retroiluminación cuando se muestra la portada; tocar la gráfica selecciona la
+medición real más cercana en el eje temporal y muestra una línea con fecha,
+hora y valor. No hay acción de apagado en el reloj. La tarjeta del clima
 muestra sensación, máxima y mínima en ambas vistas. La fecha de la última
-lectura sigue visible. La versión 0.8.0 conserva las posiciones de 0.7.1 y
+lectura sigue visible. La versión 0.8.1 conserva las posiciones de 0.7.1 y
 usa una paleta azul muy oscura, tarjetas con bordes finos y un acento del color
 de la lectura. Los umbrales 70, 180 y 240 están señalados por líneas punteadas
 del color correspondiente. No presenta mensajes de arranque en la vista normal.

@@ -1,4 +1,4 @@
-gluco_waveshare 0.8.0
+gluco_waveshare 0.8.1
 Target: Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX (800x480, N16R8)
 Framework: Arduino-ESP32 3.3.12 / ESP-IDF libraries 5.5.5
 Package: source only (no compiled firmware)

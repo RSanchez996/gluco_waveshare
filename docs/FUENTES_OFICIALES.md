@@ -36,10 +36,20 @@ el puerto Type-C marcado UART sirve para grabar y leer el registro serie.
 - Configuración LVGL 8.4 de fuentes comprimidas:
   <https://github.com/lvgl/lvgl/blob/v8.4.0/src/font/lv_font_fmt_txt.c>
 - API Wi-Fi Arduino-ESP32: <https://docs.espressif.com/projects/arduino-esp32/en/latest/api/wifi.html>
+- FAQ oficial sobre interferencias del LCD RGB y PSRAM:
+  <https://docs.espressif.com/projects/esp-faq/en/latest/software-framework/peripherals/lcd.html>
+- Modos de framebuffer y buffer de rebote RGB en ESP32-S3:
+  <https://docs.espressif.com/projects/esp-idf/en/v5.3.6/esp32s3/api-reference/peripherals/lcd/rgb_lcd.html>
 
 El proyecto fija Arduino-ESP32 3.3.12 y las bibliotecas de ESP-IDF 5.5.5.
 Sustituye la combinacion 3.1.1 / 5.3.2 que aparecia en el fallo anterior al
 activar Wi-Fi.
+
+Espressif documenta que el barrido RGB puede sufrir corrupción si el reloj de
+píxeles supera el ancho de banda disponible de PSRAM o si una escritura en
+flash interrumpe el acceso al framebuffer. La 0.8.1 reduce el reloj RGB y
+mantiene las fases de diagnóstico en RTC para evitar esas escrituras durante
+las consultas; solo las modificaciones reales de configuración usan NVS.
 
 En LVGL 8.4 la conversión de fuentes comprime los mapas por defecto. Las cinco
 fuentes `gluco_font_*.c` tienen `bitmap_format = 1`. Si

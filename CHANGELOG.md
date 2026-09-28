@@ -1,5 +1,18 @@
 # Cambios
 
+## 0.8.1
+
+- La gráfica táctil marca la medida más cercana al punto elegido, con una línea
+  vertical y su fecha, hora y glucosa. No interpola valores y descarta la
+  selección al cambiar de usuario o caducar el punto.
+- El apagado táctil queda en la parte superior de la pantalla de glucosa,
+  por encima de la gráfica; no se activa al inspeccionar el histórico.
+- Reduce de 14 a 12 MHz el reloj RGB para dar margen al acceso compartido a
+  PSRAM. Las fases de diagnóstico se guardan en RTC durante la ejecución, sin
+  escribir NVS en cada consulta. Los ajustes persistentes siguen en NVS.
+- El intervalo de LibreLinkUp y Open-Meteo permanece en dos minutos; el toque
+  de la gráfica solo redibuja esa tarjeta, sin lanzar nuevas peticiones.
+
 ## 0.8.0
 
 - Retoque visual inspirado en la infografía: fondo nocturno azul muy oscuro,

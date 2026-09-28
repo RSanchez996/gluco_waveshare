@@ -1,4 +1,4 @@
-# Empezar con gluco_waveshare 0.8.0
+# Empezar con gluco_waveshare 0.8.1
 
 Este repositorio contiene el **código fuente** para la Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX. No contiene binarios compilados, credenciales ni imágenes de la demo de fábrica.
 

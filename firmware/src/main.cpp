@@ -6,17 +6,16 @@
 #include <Preferences.h>
 Config config;AppState *sharedState=nullptr;SemaphoreHandle_t stateMutex=nullptr;SemaphoreHandle_t storageMutex=nullptr;SemaphoreHandle_t httpMutex=nullptr;QueueHandle_t patientQueue=nullptr;
 RTC_DATA_ATTR uint32_t bootMagic=0,rapidBoots=0,bootCount=0;
+RTC_DATA_ATTR char lastFaultStage[64]{};
 namespace {
 esp_reset_reason_t lastResetReason=ESP_RST_UNKNOWN;
 uint8_t faultBoots=0;
 String faultStages[3];
-String currentStage;
-uint8_t diagnosticWrites=0;
 bool persistDiagnosticStage(const char *stage){
     return strcmp(stage,"Iniciando Wi-Fi")==0 ||
            strcmp(stage,"Libre: login HTTPS")==0 ||
            strcmp(stage,"Libre: gráfica HTTPS")==0 ||
-           strcmp(stage,"Libre: analizando JSON")==0;
+           strcmp(stage,"Libre: procesando datos")==0;
 }
 void recordFaultBoot(){
     Preferences p;
@@ -26,13 +25,16 @@ void recordFaultBoot(){
                      lastResetReason==ESP_RST_PANIC || lastResetReason==ESP_RST_WDT;
     faultBoots=fault?(previous>=3?3:previous+1):0;
     if(fault){
-        const String stage=p.getString("stage","Fase anterior desconocida");
+        // La fase se conserva en RTC durante reinicios WDT, sin escribir
+        // flash mientras el controlador RGB lee el framebuffer de PSRAM.
+        const String stage=lastFaultStage[0]?String(lastFaultStage):p.getString("stage","Fase anterior desconocida");
         if(faultBoots>=1 && faultBoots<=3)p.putString((String("fault")+String(faultBoots)).c_str(),stage);
         for(unsigned i=0;i<3;++i)faultStages[i]=p.getString((String("fault")+String(i+1)).c_str(),"");
     }else{
         for(unsigned i=0;i<3;++i){const String key=String("fault")+String(i+1);if(p.isKey(key.c_str()))p.remove(key.c_str());}
         if(p.isKey("stage"))p.remove("stage");
     }
+    lastFaultStage[0]=0;
     if(faultBoots!=previous)p.putUChar("faults",faultBoots);
     p.end();
 }
@@ -40,18 +42,15 @@ void recordFaultBoot(){
 const char *appPreviousFaultStage(unsigned index){return index<3?faultStages[index].c_str():"";}
 void appDiagnosticStage(const char *stage){
     if(!stage||!stage[0])return;
-    // Las escrituras NVS detienen momentáneamente el acceso a flash/PSRAM
-    // compartido por la LCD RGB. Registrar sólo hitos de la primera consulta.
+    // RTC conserva la fase tras un WDT sin provocar escrituras NVS en las
+    // consultas HTTPS, que interrumpirían el barrido del panel RGB.
     if(!persistDiagnosticStage(stage))return;
     if(storageMutex)xSemaphoreTake(storageMutex,portMAX_DELAY);
-    if(currentStage==stage||diagnosticWrites>=6){
+    if(strcmp(lastFaultStage,stage)==0){
         if(storageMutex)xSemaphoreGive(storageMutex);
         return;
     }
-    currentStage=stage;
-    ++diagnosticWrites;
-    // Sólo registrar cambios de fase; nunca escribir en el bucle de 250 ms.
-    Preferences p;if(p.begin("glucodiag",false)){p.putString("stage",stage);p.end();}
+    strlcpy(lastFaultStage,stage,sizeof(lastFaultStage));
     if(storageMutex)xSemaphoreGive(storageMutex);
     Serial.printf("[FASE] %s\n",stage);
 }
