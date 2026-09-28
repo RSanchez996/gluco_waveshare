@@ -34,10 +34,20 @@
     <section id="wifi" class="step">
       <p class="eyebrow">CONEXIÓN DE LA PANTALLA</p><h1>Wi-Fi de casa</h1>
       <p>Usa una red de 2,4 GHz. Al guardar, el portal actual se cerrará y la pantalla mostrará el segundo QR dentro de la red doméstica.</p>
+      <div class="scan-header"><h2>Redes disponibles</h2><button type="button" id="scanWifi">Actualizar lista</button></div>
+      <p class="hint" id="scanMessage" role="status">Buscando redes al abrir esta pestaña...</p>
+      <div id="availableNetworks" class="choices"></div>
       <label>Nombre de red (SSID)<input id="ssid" maxlength="32" required autocomplete="off"></label>
       <label>Contraseña<input id="wifi_password" type="password" maxlength="63" autocomplete="new-password"></label>
       <p class="hint" id="wifiMessage">Si ya existe una clave guardada, déjala vacía para conservarla.</p>
       <button type="button" class="primary" id="testWifi">Guardar Wi-Fi y continuar</button>
+      <div id="extraWifiSection" hidden>
+        <hr><h2>Otras redes conocidas</h2>
+        <p>Guarda hasta cuatro redes adicionales de 2,4 GHz. Si se pierde la conexión, la pantalla las probará de una en una. Mientras esté conectada no cambiará de red.</p>
+        <div id="wifiNetworks"></div>
+        <div class="actions"><button type="button" id="addNetwork">Añadir red</button><button type="button" id="saveNetworks" class="primary">Guardar estas redes</button></div>
+        <p class="hint" id="networksMessage">Las claves ya guardadas se conservan si dejas su campo vacío.</p>
+      </div>
     </section>
     <section id="libre" class="step">
       <p class="eyebrow">FREESTYLE LIBRE</p><h1>Inicia sesión</h1>

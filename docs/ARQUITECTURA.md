@@ -132,3 +132,19 @@ evitar duplicar su ocupación en flash.
 ## Modulos excluidos
 
 No hay codigo, credenciales, pantallas ni rutas web de Alexa o alarmas.
+
+## Redes conocidas y primer dato (v0.8.7)
+
+El segundo portal QR acepta cuatro redes adicionales y escribe su lista en la
+misma entrada de ajustes NVS. El formulario de servicios conserva la lista aun
+cuando el cliente web no la envíe. El código ignora las antiguas claves de
+brillo visual guardadas por la versión 0.8.5; no necesita borrar NVS.
+
+La tarea de datos sigue fijada en CPU1/prioridad 0. La búsqueda periódica de redes de 0.8.6 se retira: la radio no escanea ni cambia de SSID mientras está conectada y consultando servicios. Si se desconecta, espera 15 segundos para el reintento automático y después intenta cada red adicional y la principal con intervalos de 30 segundos. Con solo la red principal, se conserva el reintento de respaldo cada minuto.
+
+El portal QR ofrece un escaneo asíncrono solo cuando se abre la pestaña Wi-Fi o se pulsa Actualizar lista. Espera como máximo ocho segundos y conserva los resultados en RAM hasta cerrar el portal. El escaneo comparte el semáforo HTTPS y no puede iniciarse mientras corre un login LibreLinkUp, una búsqueda de ciudad u otra petición de red; al guardar Wi-Fi o cerrar el portal cancela cualquier búsqueda pendiente. Como el radio comparte recursos con la pantalla RGB, un escaneo solicitado puede causar una perturbación breve; durante la visualización normal no habrá escaneos periódicos.
+
+Con paciente seleccionado se consulta la gráfica directamente antes de
+refrescar la lista de usuarios; ambas operaciones siguen separadas 45 segundos.
+No se elevan prioridades de HTTPS, pues priorizar la red frente al bucle LVGL
+y las tareas del sistema puede reabrir la situación de WDT observada antes.

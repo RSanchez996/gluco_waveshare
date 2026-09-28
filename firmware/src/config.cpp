@@ -6,8 +6,10 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <esp_heap_caps.h>
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <new>
 
@@ -37,6 +39,41 @@ struct GeocodeChoice { char name[140]{}; float latitude=0, longitude=0; char tim
 GeocodeChoice geocodeChoices[8]{};
 size_t geocodeCount=0;
 char geocodeError[160]{};
+struct NearbyWifi { String ssid; int rssi = -100; bool secured = true; };
+NearbyWifi nearbyWifi[16];
+size_t nearbyWifiCount = 0;
+bool wifiScanPending = false, wifiScanReady = false;
+bool wifiScanHttpHeld = false;
+uint32_t wifiScanStarted = 0, lastWifiScan = 0, lastWifiScanCheck = 0;
+
+void cancelWifiScan() {
+    if (wifiScanPending) esp_wifi_scan_stop();
+    WiFi.scanDelete();
+    wifiScanPending = false;
+    if (wifiScanHttpHeld) { xSemaphoreGive(httpMutex); wifiScanHttpHeld = false; }
+}
+
+void collectWifiScan(int found) {
+    nearbyWifiCount = 0;
+    for (int i = 0; i < found; ++i) {
+        const String ssid = WiFi.SSID(i);
+        if (ssid.isEmpty()) continue;
+        const int rssi = WiFi.RSSI(i);
+        size_t j = 0;
+        while (j < nearbyWifiCount && nearbyWifi[j].ssid != ssid) ++j;
+        if (j == nearbyWifiCount) {
+            if (nearbyWifiCount >= 16) continue;
+            ++nearbyWifiCount;
+        } else if (nearbyWifi[j].rssi >= rssi) continue;
+        nearbyWifi[j] = {ssid, rssi, WiFi.encryptionType(i) != WIFI_AUTH_OPEN};
+    }
+    std::sort(nearbyWifi, nearbyWifi + nearbyWifiCount,
+        [](const NearbyWifi &a, const NearbyWifi &b) { return a.rssi > b.rssi; });
+    WiFi.scanDelete();
+    wifiScanPending = false;
+    wifiScanReady = true;
+    if (wifiScanHttpHeld) { xSemaphoreGive(httpMutex); wifiScanHttpHeld = false; }
+}
 
 void fail(int code, const String &message) {
     Doc d(1000); d["message"] = message;
@@ -82,6 +119,13 @@ bool body(Doc &d, size_t limit) {
 
 void toJson(const Config &c, Doc &d, bool secrets) {
     d["ssid"] = c.ssid;
+    JsonArray networks=d.createNestedArray("wifi_networks");
+    for(size_t i=0;i<c.extraWifiCount;++i){
+        JsonObject entry=networks.createNestedObject();
+        entry["ssid"]=c.extraWifi[i].ssid;
+        if(secrets)entry["password"]=c.extraWifi[i].password;
+        else entry["has_password"]=!c.extraWifi[i].password.isEmpty();
+    }
     d["libre_user"] = c.libreUser;
     d["libre_region"] = c.libreRegion;
     d["libre_version"] = c.libreVersion;
@@ -115,6 +159,13 @@ void fromJson(JsonVariantConst d, Config &c) {
     c.latitude = d["latitude"] | 0.0f;
     c.longitude = d["longitude"] | 0.0f;
     c.locationSet = d["location_set"] | false;
+    if(d["wifi_networks"].is<JsonArrayConst>()){
+        c.extraWifiCount=0;
+        for(JsonObjectConst item:d["wifi_networks"].as<JsonArrayConst>()){
+            if(c.extraWifiCount>=MAX_EXTRA_WIFI)break;
+            c.extraWifi[c.extraWifiCount++]={String(item["ssid"] | ""),String(item["password"] | "")};
+        }
+    }
 }
 
 bool persist(const Config &next) {
@@ -150,6 +201,12 @@ bool validWifi(const String &ssid, const String &pass, String &error) {
 
 bool validate(const Config &c, String &error) {
     if (!validWifi(c.ssid, c.wifiPass, error)) return false;
+    if(c.extraWifiCount>MAX_EXTRA_WIFI){error="Demasiadas redes Wi-Fi";return false;}
+    for(size_t i=0;i<c.extraWifiCount;++i){
+        if(!validWifi(c.extraWifi[i].ssid,c.extraWifi[i].password,error))return false;
+        if(c.extraWifi[i].ssid==c.ssid){error="Una red adicional coincide con la principal";return false;}
+        for(size_t j=0;j<i;++j)if(c.extraWifi[i].ssid==c.extraWifi[j].ssid){error="Hay redes Wi-Fi repetidas";return false;}
+    }
     if (c.libreUser.isEmpty() || c.libreUser.length() > 160 ||
         c.librePass.isEmpty() || c.librePass.length() > 256) {
         error = "Introduce la cuenta y contraseña de LibreLinkUp"; return false;
@@ -191,13 +248,23 @@ void getConfig() {
 
 void wifiConnect() {
     Doc d(2500); if (!body(d, 1800)) return;
+    cancelWifiScan();
     String ssid = d["ssid"] | "", pass = d["password"] | "";
     ssid.trim();
     if (pass.isEmpty() && ssid == config.ssid) pass = config.wifiPass;
+    if(pass.isEmpty())for(size_t i=0;i<config.extraWifiCount;++i)
+        if(config.extraWifi[i].ssid==ssid){pass=config.extraWifi[i].password;break;}
     String error;
     if (!validWifi(ssid, pass, error)) { fail(400, error); return; }
     Config next = config;
     next.ssid = ssid; next.wifiPass = pass;
+    // Promover una red conocida a principal no deja un SSID duplicado.
+    for(size_t i=0;i<next.extraWifiCount;){
+        if(next.extraWifi[i].ssid==ssid){
+            for(size_t j=i+1;j<next.extraWifiCount;++j)next.extraWifi[j-1]=next.extraWifi[j];
+            --next.extraWifiCount;
+        }else ++i;
+    }
     if (!persist(next)) { fail(500, "No se pudo guardar el Wi-Fi en la memoria"); return; }
     config = next;
     settingsLoadState="ok";
@@ -205,6 +272,95 @@ void wifiConnect() {
     web.send(200, "application/json",
         "{\"saved\":true,\"message\":\"Wi-Fi guardado. Vuelve a la red de casa y espera el segundo QR.\"}");
     transitionAt = millis() + 1500;
+}
+
+void saveWifiNetworks(){
+    Doc d(2400);if(!body(d,2000))return;
+    if(mode.load()!=PortalMode::LocalNetwork){fail(409,"Abre el segundo QR desde la red local");return;}
+    JsonArrayConst list=d["networks"].as<JsonArrayConst>();
+    if(list.isNull()||list.size()>MAX_EXTRA_WIFI){fail(400,"Se admiten hasta cuatro redes adicionales");return;}
+    Config next=config;
+    next.extraWifiCount=0;
+    for(JsonObjectConst item:list){
+        String ssid=item["ssid"] | "";ssid.trim();
+        String pass=item["password"] | "";
+        if(pass.isEmpty())for(size_t i=0;i<config.extraWifiCount;++i)
+            if(config.extraWifi[i].ssid==ssid){pass=config.extraWifi[i].password;break;}
+        String error;
+        if(!validWifi(ssid,pass,error)||ssid==next.ssid){
+            fail(400,ssid==next.ssid?"La red principal ya está guardada":error);return;
+        }
+        for(size_t i=0;i<next.extraWifiCount;++i)if(next.extraWifi[i].ssid==ssid){
+            fail(400,"Red Wi-Fi duplicada");return;
+        }
+        next.extraWifi[next.extraWifiCount++]={ssid,pass};
+    }
+    if(!persist(next)){fail(500,"No se pudieron guardar las redes en NVS");return;}
+    config=next;
+    settingsLoadState="ok";
+    configRevision.fetch_add(1,std::memory_order_release);
+    web.send(200,"application/json","{\"message\":\"Redes adicionales guardadas. Se probarán si se pierde el Wi-Fi.\"}");
+}
+
+void beginWifiScan() {
+    Doc d(128); if (!body(d, 100)) return;
+    if (libreJobState.load(std::memory_order_acquire) == LibreJobState::Running ||
+        geocodeJobState.load(std::memory_order_acquire) == GeocodeJobState::Running) {
+        fail(409, "Espera a que termine la consulta anterior"); return;
+    }
+    if (wifiScanPending) {
+        web.send(202, "application/json", "{\"state\":\"running\"}"); return;
+    }
+    const uint32_t now = millis();
+    if (lastWifiScan && now - lastWifiScan < 15000) {
+        if (wifiScanReady) { web.send(200, "application/json", "{\"state\":\"ready\"}"); return; }
+        fail(429, "Espera unos segundos antes de repetir la búsqueda"); return;
+    }
+    if (httpMutex && xSemaphoreTake(httpMutex, 0) != pdTRUE) {
+        fail(409, "Hay una consulta de red en curso; actualiza la lista en unos segundos"); return;
+    }
+    wifiScanHttpHeld = httpMutex != nullptr;
+    nearbyWifiCount = 0;
+    wifiScanReady = false;
+    lastWifiScan = now;
+    const int found = WiFi.scanNetworks(true, false, false, 150);
+    if (found == WIFI_SCAN_RUNNING) {
+        wifiScanPending = true;
+        wifiScanStarted = now;
+        lastWifiScanCheck = now;
+        web.send(202, "application/json", "{\"state\":\"running\"}");
+    } else if (found >= 0) {
+        collectWifiScan(found);
+        web.send(200, "application/json", "{\"state\":\"ready\"}");
+    } else {
+        cancelWifiScan();
+        fail(503, "No se pudo buscar redes; introduce el SSID manualmente");
+    }
+}
+
+void wifiScanStatus() {
+    if (!allowed()) return;
+    if (wifiScanPending) {
+        const int found = WiFi.scanComplete();
+        if (found == WIFI_SCAN_RUNNING && millis() - wifiScanStarted < 8000) {
+            web.send(202, "application/json", "{\"state\":\"running\"}"); return;
+        }
+        if (found < 0) {
+            cancelWifiScan();
+            fail(503, "Búsqueda agotada; introduce el SSID manualmente o reintenta"); return;
+        }
+        collectWifiScan(found);
+    }
+    if (!wifiScanReady) { fail(409, "Inicia una búsqueda de redes"); return; }
+    Doc out(5000); out["state"] = "ready";
+    auto list = out.createNestedArray("networks");
+    for (size_t i = 0; i < nearbyWifiCount; ++i) {
+        auto item = list.createNestedObject();
+        item["ssid"] = nearbyWifi[i].ssid;
+        item["rssi"] = nearbyWifi[i].rssi;
+        item["secure"] = nearbyWifi[i].secured;
+    }
+    String json; serializeJson(out, json); web.send(200, "application/json", json);
 }
 
 void runLibreLogin(LibreCredentials *credentials) {
@@ -246,6 +402,7 @@ void libreLogin() {
     if (geocodeJobState.load(std::memory_order_acquire) == GeocodeJobState::Running) {
         fail(409, "Espera a que termine la búsqueda de localidad"); return;
     }
+    if (wifiScanPending) { fail(409, "Espera a que termine la búsqueda Wi-Fi"); return; }
     auto *credentials = new(std::nothrow) LibreCredentials;
     if (!credentials) { fail(500, "Memoria insuficiente para iniciar sesión"); return; }
     credentials->user = d["user"] | "";
@@ -336,6 +493,7 @@ void geocode() {
     if(libreJobState.load(std::memory_order_acquire)==LibreJobState::Running){
         fail(409,"Espera a que termine el inicio de sesión LibreLinkUp");return;
     }
+    if(wifiScanPending){fail(409,"Espera a que termine la búsqueda Wi-Fi");return;}
     String *job=new(std::nothrow) String(query);
     if(!job){fail(500,"Memoria insuficiente para buscar la localidad");return;}
     geocodeCount=0;geocodeError[0]=0;
@@ -370,7 +528,7 @@ void save() {
     if (mode.load() != PortalMode::LocalNetwork) {
         fail(409, "Completa primero la configuración Wi-Fi"); return;
     }
-    Config next; fromJson(d.as<JsonVariantConst>(), next);
+    Config next=config;fromJson(d.as<JsonVariantConst>(), next);
     next.ssid.trim(); next.libreUser.trim(); next.city.trim();
     if (next.wifiPass.isEmpty() && next.ssid == config.ssid) next.wifiPass = config.wifiPass;
     if (next.librePass.isEmpty() && next.libreUser == config.libreUser && next.libreRegion == config.libreRegion)
@@ -413,6 +571,9 @@ void registerRoutes() {
     web.on("/style.css", HTTP_GET, [] { if (allowed()) web.send_P(200, "text/css; charset=utf-8", WEB_CSS); });
     web.on("/api/config", HTTP_GET, getConfig);
     web.on("/api/wifi", HTTP_POST, wifiConnect);
+    web.on("/api/wifi/networks", HTTP_POST, saveWifiNetworks);
+    web.on("/api/wifi/scan", HTTP_POST, beginWifiScan);
+    web.on("/api/wifi/scan/status", HTTP_GET, wifiScanStatus);
     web.on("/api/libre/login", HTTP_POST, libreLogin);
     web.on("/api/libre/status", HTTP_GET, libreStatus);
     web.on("/api/geocode", HTTP_POST, geocode);
@@ -427,6 +588,7 @@ void registerRoutes() {
 }
 
 void stopServer() {
+    cancelWifiScan();
     if (serverRunning) { web.stop(); serverRunning = false; }
     dns.stop();
 }
@@ -525,6 +687,9 @@ void portalStart() {
     snprintf(value, sizeof(value), "%08lX%08lX%08lX", static_cast<unsigned long>(esp_random()),
              static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random())); csrf = value;
     transitionAt = closeAt = rebootAt = 0;
+    lastWifiScan = 0;
+    wifiScanReady = false;
+    nearbyWifiCount = 0;
     displayWake();
     if (config.ssid.isEmpty()) startWifiAccessPoint();
     else if (WiFi.status() == WL_CONNECTED) startLocalNetwork();
@@ -548,6 +713,12 @@ void portalLoop() {
         return;
     }
     if (current == PortalMode::WifiAccessPoint) dns.processNextRequest();
+    if (wifiScanPending && millis() - lastWifiScanCheck >= 250) {
+        lastWifiScanCheck = millis();
+        const int found = WiFi.scanComplete();
+        if (found >= 0) collectWifiScan(found);
+        else if (millis() - wifiScanStarted >= 8000) cancelWifiScan();
+    }
     if (serverRunning) web.handleClient();
     if (millis() - started > kPortalMs) { portalStop(); uiShowHome(); }
 }

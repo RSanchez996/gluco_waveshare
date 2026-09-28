@@ -14,6 +14,10 @@ La documentacion confirma 800 x 480, RGB, 16 MB flash, 8 MB PSRAM, ST7262,
 GT911 y CH422G. Este paquete no redistribuye los binarios demo: usa el perfil
 de placa y el flujo de inicializacion documentados por el fabricante.
 
+El perfil oficial controla la retroiluminación de la 4.3B mediante el CH422G
+como interruptor. Esta versión retira el regulador visual de la 0.8.5 y
+mantiene solo el apagado físico ya probado en la 0.8.4.
+
 El codigo se contrasto con el ZIP oficial
 `ESP32-S3-Touch-LCD-4.3B-BOX-Demo` y, en particular, con
 `Arduino/examples/09_lvgl_Porting` y el perfil 4.3B de

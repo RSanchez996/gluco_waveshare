@@ -1,5 +1,18 @@
 # Cambios
 
+## 0.8.7
+
+- Retira escaneos periódicos y cambios de red con la pantalla en funcionamiento para reducir la contención de radio/PSRAM observada como destellos. Las redes adicionales se prueban únicamente tras desconexión y con 30 segundos entre intentos.
+- La pestaña Wi-Fi muestra las redes detectadas mediante un escaneo bajo demanda, limitado a ocho segundos; permite elegir el SSID sin teclearlo y conserva la entrada manual para redes ocultas.
+- Mantiene el orden de LibreLinkUp, afinidad y prioridad de la tarea de datos, así como particiones y formato NVS. Revisión estática; pendiente de prueba en la placa.
+
+## 0.8.6
+
+- Retira el brillo visual de 0.8.5: el interruptor CH422G no regula la retroiluminación; el toque para apagarla físicamente permanece.
+- Hasta cuatro redes Wi-Fi adicionales desde la pestaña del segundo portal QR; persisten en NVS y se examinan fuera de HTTPS mediante un escaneo asíncrono acotado.
+- Conserva CPU1 y prioridad 0 para datos. Cuando hay usuario guardado, solicita la gráfica antes que la lista de usuarios, manteniendo el intervalo de 45 segundos entre peticiones.
+- Tabla de particiones sin cambios; se pueden cargar ajustes existentes sin borrarlos. Revisión estática, sin compilar ni probar en la placa.
+
 ## 0.8.4
 
 - Reduce de nuevo el reloj RGB a 12 MHz durante Wi-Fi y resincroniza el panel

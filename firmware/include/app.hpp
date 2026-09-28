@@ -7,11 +7,15 @@
 #include <atomic>
 #include "core.hpp"
 
-constexpr const char *APP_VERSION = "0.8.4";
+constexpr const char *APP_VERSION = "0.8.7";
 constexpr size_t MAX_CONNECTIONS = 12;
+constexpr size_t MAX_EXTRA_WIFI = 4;
 enum class PortalMode : uint8_t { Off, WifiAccessPoint, WaitingForWifi, LocalNetwork };
+struct WifiEntry { String ssid, password; };
 struct Config {
     String ssid, wifiPass;
+    WifiEntry extraWifi[MAX_EXTRA_WIFI];
+    size_t extraWifiCount=0;
     String libreUser, librePass, libreRegion = "eu", libreVersion = "5.1.1", patientId;
     String patientName, city, timezone = "Europe/Madrid";
     float latitude = 0, longitude = 0;

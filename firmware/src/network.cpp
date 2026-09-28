@@ -11,6 +11,7 @@ namespace {
 constexpr uint32_t kRequestGapMs = 45000;
 constexpr uint32_t kWifiStableMs = 8000;
 constexpr uint32_t kReconnectFallbackMs = 60000;
+constexpr uint32_t kExtraWifiFallbackMs = 30000;
 AppState *work = nullptr;
 
 bool due(uint32_t now, uint32_t at) { return at && int32_t(now - at) >= 0; }
@@ -92,12 +93,13 @@ void task(void *) {
 
     LibreClient libre;
     uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0;
-    uint32_t connectedAt = 0, lastRequest = 0, reconnectAt = 0, libreBlockedUntil = 0;
+    uint32_t connectedAt = 0, disconnectedAt = 0, lastRequest = 0, reconnectAt = 0, libreBlockedUntil = 0;
     bool scheduleReady = false, portalWasActive = false;
     String accountKey = net::sha256(config.libreUser + "\n" + config.librePass + "\n" + config.libreRegion + "\n" + config.libreVersion);
     String locationKey = net::sha256(config.city + "\n" + String(config.latitude, 5) + "\n" + String(config.longitude, 5));
     uint32_t knownRevision = configRevision.load(std::memory_order_acquire);
     int lastWifi = -1;
+    size_t fallbackIndex = 0;
 
     while (true) {
         PatientSelection selection{};
@@ -180,18 +182,37 @@ void task(void *) {
                 Serial.printf("[WIFI] Estado %d; la reconexión automática sigue activa\n", wifi);
         }
         if (wifi != WL_CONNECTED) {
+            if (!disconnectedAt) {
+                disconnectedAt = now;
+                reconnectAt = now + (config.extraWifiCount ? 15000 : kReconnectFallbackMs);
+                fallbackIndex = 0;
+            }
             connectedAt = 0;
             scheduleReady = false;
             appDiagnosticStage("Esperando conexión Wi-Fi");
             publishGlucoseStatus("Wi-Fi desconectado; mostrando los últimos datos guardados");
             if (!config.ssid.isEmpty() && (!reconnectAt || int32_t(now - reconnectAt) >= 0)) {
-                WiFi.reconnect();
-                reconnectAt = now + kReconnectFallbackMs;
-                Serial.println("[WIFI] Reintento de respaldo sin borrar ni reiniciar la interfaz");
+                if (config.extraWifiCount) {
+                    // Dejar primero 15 s al reintento automático; después probar
+                    // las redes guardadas de una en una, solo sin conexión.
+                    const size_t index = fallbackIndex++ % (config.extraWifiCount + 1);
+                    const String &ssid = index < config.extraWifiCount ?
+                        config.extraWifi[index].ssid : config.ssid;
+                    const String &pass = index < config.extraWifiCount ?
+                        config.extraWifi[index].password : config.wifiPass;
+                    Serial.printf("[WIFI] Probando red guardada %s\n", ssid.c_str());
+                    WiFi.begin(ssid.c_str(), pass.c_str());
+                    reconnectAt = now + kExtraWifiFallbackMs;
+                } else {
+                    WiFi.reconnect();
+                    reconnectAt = now + kReconnectFallbackMs;
+                    Serial.println("[WIFI] Reintento de respaldo sin borrar ni reiniciar la interfaz");
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
+        disconnectedAt=0;
         if (!connectedAt) {
             connectedAt = now;
             reconnectAt = now + kReconnectFallbackMs;
@@ -213,8 +234,13 @@ void task(void *) {
             const uint32_t start = millis();
             const bool usersFresh = work->connectionCount && work->connectionsFetched > 0 &&
                 time(nullptr) - work->connectionsFetched < 6 * 60 * 60;
-            connectionsDue = usersFresh ? start + 6 * 60 * 60 * 1000UL : start + 1000;
-            glucoseDue = start + 15000;
+            // Con un paciente ya elegido, /graph puede autenticar y leer sin
+            // /connections. Recuperar primero la lectura evita una espera
+            // inicial de 45 s y conserva el intervalo entre peticiones TLS.
+            const bool directGraph=!config.libreUser.isEmpty()&&!config.patientId.isEmpty();
+            connectionsDue = usersFresh ? start + 6 * 60 * 60 * 1000UL :
+                             directGraph ? start + kRequestGapMs : start + 1000;
+            glucoseDue = directGraph ? start + 1000 : start + 15000;
             weatherDue = config.locationSet ? start + 30000 : 0;
             if (!config.locationSet) text(work->weatherError, "Configura una ubicación en Ajustes");
             appDiagnosticStage("Esperando consulta Libre");

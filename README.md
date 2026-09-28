@@ -1,6 +1,6 @@
 # gluco_waveshare
 
-Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.4** en español. Código fuente bajo licencia MIT.
+Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.7** en español. Código fuente bajo licencia MIT.
 
 > Proyecto personal no afiliado a Waveshare ni a Abbott. Utiliza LibreLinkUp, cuya API no es pública y puede cambiar. No sustituye el sensor, la aplicación oficial ni sus alarmas; verifica allí las lecturas antes de tomar decisiones de tratamiento.
 
@@ -10,7 +10,7 @@ Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD
 - Selector de personas que comparten lecturas con la **cuenta receptora LibreLinkUp**, accesible desde la pantalla de glucosa.
 - Reloj, fecha, clima actual, sensación térmica, máxima y mínima; previsión de seis horas o cuatro días.
 - Configuración desde el móvil con dos QR: Wi-Fi temporal primero, servicios a través de la red doméstica después.
-- Ajustes y selección del usuario guardados en NVS tras el apagado. Peticiones de clima y glucosa ordenadas, como máximo una por servicio cada dos minutos.
+- Ajustes, redes Wi-Fi adicionales y selección del usuario guardados en NVS tras el apagado. Peticiones de clima y glucosa ordenadas, como máximo una por servicio cada dos minutos.
 - Tema oscuro. En glucosa, toca la zona **por encima de la gráfica** para apagar la retroiluminación; otro toque la enciende. El engranaje abre Ajustes.
 - Interfaz oscura con tarjetas azuladas, lectura destacada con acento del color
   de glucosa, umbrales punteados en la gráfica y pronóstico más legible. Se
@@ -47,7 +47,15 @@ cd firmware
 
 Sustituye `/dev/ttyACM0` por el puerto detectado: puede ser `/dev/ttyUSB0`. La primera compilación descarga dependencias. Si falta permiso para acceder al puerto, ejecuta `sudo usermod -aG dialout "$USER"`, cierra sesión y vuelve a entrar.
 
-**Si ya tenías gluco_waveshare, no ejecutes `erase`:** al borrar toda la flash también desaparecen Wi-Fi, cuenta y ubicación. La tabla de particiones de 0.8.4 es la misma que la de 0.8.0. Para actualizar desde la raíz usa `./actualizar.sh /dev/ttyACM0`: guarda una copia de NVS antes de ejecutar `upload` y cancela la carga si la copia falla. Si los datos ya desaparecieron, el firmware no puede reconstruirlos sin una copia anterior. Para Windows, pasos iniciales y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
+**Si ya tenías gluco_waveshare, no ejecutes `erase`:** al borrar toda la flash también desaparecen Wi-Fi, cuenta y ubicación. La tabla de particiones de 0.8.7 es la misma que la de 0.8.0. Para actualizar desde la raíz usa `./actualizar.sh /dev/ttyACM0`: guarda una copia de NVS antes de ejecutar `upload` y cancela la carga si la copia falla. Si los datos ya desaparecieron, el firmware no puede reconstruirlos sin una copia anterior. Para Windows, pasos iniciales y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
+
+## Redes Wi-Fi adicionales
+
+Toca el engranaje y escanea el **segundo QR** desde un móvil conectado a la misma red. En la pestaña **Wi-Fi** elige una red de la lista o añade o quita hasta cuatro redes adicionales de 2,4 GHz y pulsa **Guardar estas redes**. Las claves permanecen en NVS después de apagar la pantalla. No es necesario repetir el inicio de sesión en LibreLinkUp al añadirlas.
+
+Al abrir la pestaña Wi-Fi se muestran las redes cercanas para elegir el SSID, con opción de actualizar la lista. Se buscan únicamente al abrir esa pestaña o al pedirlo desde el móvil; no hay escaneos periódicos durante las consultas ni cambios de red mientras la conexión funcione. Si se pierde, primero se deja actuar a la reconexión automática; luego se prueban las redes adicionales y la principal de una en una, cada 30 segundos. Las redes ocultas se pueden introducir a mano. Una red con buena señal podría no tener acceso a Internet.
+
+Con un usuario ya guardado, el primer trabajo LibreLinkUp es la gráfica; la lista de usuarios se actualiza después. La tarea conserva CPU1 y prioridad 0 para proteger la interfaz y las tareas del sistema. No se ofrece un brillo por software: para eliminar la luz nocturna, apaga la retroiluminación tocando la zona superior de la pantalla de glucosa.
 
 ## Primer arranque
 

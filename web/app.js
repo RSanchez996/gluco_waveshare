@@ -2,6 +2,29 @@
 (()=>{
 const $=id=>document.getElementById(id);
 let cfg={},selected={id:"",name:""},location=null,busy=false;
+let wifiScanned=false,wifiScanBusy=false;
+const maxExtraWifi=4;
+function wifiNetworkRow(ssid="",hasPassword=false){
+  if($("wifiNetworks").children.length>=maxExtraWifi)return;
+  const row=document.createElement("div");row.className="network-row";
+  const name=document.createElement("label");name.textContent="Red (SSID)";
+  const ssidInput=document.createElement("input");ssidInput.maxLength=32;ssidInput.value=ssid;ssidInput.autocomplete="off";ssidInput.className="network-ssid";name.append(ssidInput);
+  const key=document.createElement("label");key.textContent="Contraseña";
+  const password=document.createElement("input");password.type="password";password.maxLength=63;password.autocomplete="new-password";
+  password.className="network-password";password.placeholder=hasPassword?"Guardada; vacío para conservar":"Deja vacío si es abierta";key.append(password);
+  const remove=document.createElement("button");remove.type="button";remove.textContent="Quitar";remove.addEventListener("click",()=>row.remove());
+  row.append(name,key,remove);$("wifiNetworks").append(row);
+}
+$("addNetwork").addEventListener("click",()=>wifiNetworkRow());
+$("saveNetworks").addEventListener("click",async()=>{
+  if(busy)return;
+  const networks=[...$("wifiNetworks").children].map(row=>({ssid:row.querySelector(".network-ssid").value.trim(),password:row.querySelector(".network-password").value}));
+  if(networks.some(n=>!n.ssid)){message("Indica el nombre de cada red o quita la fila vacía.",true);return;}
+  busy=true;$("saveNetworks").disabled=true;
+  try{const r=await api("/api/wifi/networks",{networks});$("networksMessage").textContent=r.message;message(r.message);}
+  catch(e){$("networksMessage").textContent=e.message;message(e.message,true)}
+  finally{busy=false;$("saveNetworks").disabled=false;}
+});
 
 const message=(text,bad=false)=>{$("message").textContent=text;$("message").className=bad?"bad":"ok"};
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -15,10 +38,54 @@ async function api(path,data){
   let out;try{out=await r.json()}catch{throw Error("La pantalla cerró el portal o devolvió una respuesta no válida.")}
   if(!r.ok)throw Error(out.message||`HTTP ${r.status}`);return out;
 }
+async function scanWifi(){
+  if(wifiScanBusy||busy)return;
+  wifiScanBusy=true;wifiScanned=true;$('scanWifi').disabled=true;
+  $('scanMessage').textContent='Buscando redes cercanas...';
+  try{
+    let result=await api('/api/wifi/scan',{});
+    for(let i=0;result.state==='running'&&i<17;i++){
+      await wait(500);result=await api('/api/wifi/scan/status');
+    }
+    if(result.state!=='ready')throw Error('La búsqueda tardó demasiado. Puedes escribir el SSID manualmente.');
+    const data=await api('/api/wifi/scan/status');
+    const list=$('availableNetworks');list.replaceChildren();
+    for(const item of data.networks||[]){
+      const row=document.createElement('div');row.className='scan-row';
+      const info=document.createElement('div');
+      const name=document.createElement('strong');name.textContent=item.ssid;
+      const detail=document.createElement('small');detail.textContent=`${item.secure?'Con clave':'Abierta'} · ${item.rssi} dBm`;
+      info.append(name,detail);
+      const use=document.createElement('button');use.type='button';use.textContent='Elegir';
+      use.addEventListener('click',()=>{
+        if($('ssid').value!==item.ssid)$('wifi_password').value='';
+        $('ssid').value=item.ssid;
+        $('scanMessage').textContent=`Red elegida: ${item.ssid}. Introduce su clave si corresponde.`;
+      });
+      row.append(info,use);
+      if(cfg.portal_mode!=='wifi'){
+        const add=document.createElement('button');add.type='button';add.textContent='Añadir';
+        add.addEventListener('click',()=>{
+          if([...$('wifiNetworks').querySelectorAll('.network-ssid')].some(x=>x.value===item.ssid))return;
+          if($('wifiNetworks').children.length>=maxExtraWifi){$('scanMessage').textContent='Ya hay cuatro redes adicionales.';return;}
+          wifiNetworkRow(item.ssid);$('scanMessage').textContent=`Añadida ${item.ssid}. Escribe su clave y pulsa Guardar estas redes.`;
+        });
+        row.append(add);
+      }
+      list.append(row);
+    }
+    $('scanMessage').textContent=data.networks?.length?
+      'Elige una red de 2,4 GHz o escribe manualmente un SSID oculto.':
+      'No se encontraron redes. Puedes escribir el SSID manualmente.';
+  }catch(e){$('scanMessage').textContent=e.message}
+  finally{wifiScanBusy=false;$('scanWifi').disabled=false}
+}
+$('scanWifi').addEventListener('click',scanWifi);
 function step(id){
   document.querySelectorAll(".step").forEach(x=>x.classList.toggle("active",x.id===id));
   document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x.dataset.step===id));
   if(id==="finish")summary();
+  if(id==="wifi"&&!wifiScanned)scanWifi();
 }
 document.querySelectorAll("nav button").forEach(x=>x.addEventListener("click",()=>step(x.dataset.step)));
 $("openWifi").addEventListener("click",()=>step("wifi"));
@@ -116,6 +183,10 @@ async function start(){
     else if(cfg.settings_state==="missing")message("No aparecen ajustes guardados en NVS. Comprueba si tienes una copia anterior antes de configurar de nuevo.",true);
     for(const id of ["ssid","libre_user","libre_region","libre_version","city","latitude","longitude","timezone"])if($(id))$(id).value=cfg[id]??"";
     if(cfg.has_wifi_password)$("wifi_password").placeholder="Guardada; deja vacío para conservar";
+    if(cfg.portal_mode!=="wifi"){
+      $("extraWifiSection").hidden=false;
+      for(const n of cfg.wifi_networks||[])wifiNetworkRow(n.ssid,n.has_password);
+    }
     if(cfg.has_libre_password)$("libre_password").placeholder="Guardada; deja vacío para conservar";
     if(cfg.patient_id)selected={id:cfg.patient_id,name:cfg.patient_name||cfg.patient_id};
     if(cfg.location_set)location={name:cfg.city,latitude:cfg.latitude,longitude:cfg.longitude,timezone:cfg.timezone};
