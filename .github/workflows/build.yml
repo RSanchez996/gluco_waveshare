@@ -1,0 +1,32 @@
+name: Host tests and ESP32 build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Host tests with sanitizers (not hardware tests)
+        run: python tools/test_all.py --sanitize
+      - name: Compile actual ESP32 target
+        run: python tools/manage.py build
+      - name: Store compilation artifacts only after success
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-43b-build
+          path: |
+            firmware/.pio/build/waveshare_43b/firmware.bin
+            firmware/.pio/build/waveshare_43b/bootloader.bin
+            firmware/.pio/build/waveshare_43b/partitions.bin
+            firmware/.pio/build/waveshare_43b/firmware.elf
+          if-no-files-found: error

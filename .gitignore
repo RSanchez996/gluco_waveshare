@@ -1,0 +1,35 @@
+# Build environments and dependencies
+.venv*/
+.pio/
+**/.pio/
+node_modules/
+**/node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+.vscode/
+.idea/
+# Private data: NEVER commit these
+.env
+.env.*
+!.env.example
+*session*.json
+*cookie*.json
+*.key
+*.pem
+*.p12
+*.pfx
+private/
+secrets/
+.nightscout-desk/
+firmware/certs/extra-roots.pem
+# Local build/output files (images in docs/ are deliberately included)
+*.bin
+*.elf
+*.map
+*.log
+*.zip
+build/
+dist/
+# Keep this public trust-anchor bundle tracked (it is not a private key)
+!firmware/certs/x509_crt_bundle

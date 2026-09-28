@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Gluco Waveshare</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="brand"><span>GW</span><div><strong>Gluco Waveshare</strong><small id="version">Configuración local</small></div></div>
+  <em id="state">Conectando...</em>
+</header>
+<main>
+  <div class="notice" id="notice">Este portal solo funciona mientras el QR está visible en la pantalla.</div>
+  <nav>
+    <button type="button" data-step="start" class="active">Inicio</button>
+    <button type="button" data-step="wifi">Wi-Fi</button>
+    <button type="button" data-step="libre">LibreLinkUp</button>
+    <button type="button" data-step="patient">Usuario</button>
+    <button type="button" data-step="location">Ubicación</button>
+    <button type="button" data-step="finish">Guardar</button>
+  </nav>
+  <form id="form">
+    <section id="start" class="step active">
+      <p class="eyebrow">AJUSTES</p><h1>¿Qué quieres configurar?</h1>
+      <p>Los valores guardados se conservan aunque apagues completamente la pantalla.</p>
+      <div class="actions">
+        <button type="button" id="openWifi">Cambiar red Wi-Fi</button>
+        <button type="button" class="primary" id="openServices">LibreLinkUp, usuario y clima</button>
+      </div>
+    </section>
+    <section id="wifi" class="step">
+      <p class="eyebrow">CONEXIÓN DE LA PANTALLA</p><h1>Wi-Fi de casa</h1>
+      <p>Usa una red de 2,4 GHz. Al guardar, el portal actual se cerrará y la pantalla mostrará el segundo QR dentro de la red doméstica.</p>
+      <label>Nombre de red (SSID)<input id="ssid" maxlength="32" required autocomplete="off"></label>
+      <label>Contraseña<input id="wifi_password" type="password" maxlength="63" autocomplete="new-password"></label>
+      <p class="hint" id="wifiMessage">Si ya existe una clave guardada, déjala vacía para conservarla.</p>
+      <button type="button" class="primary" id="testWifi">Guardar Wi-Fi y continuar</button>
+    </section>
+    <section id="libre" class="step">
+      <p class="eyebrow">FREESTYLE LIBRE</p><h1>Inicia sesión</h1>
+      <p>Usa la cuenta de <strong>LibreLinkUp</strong> que recibe las lecturas compartidas. No es el portal de informes LibreView.</p>
+      <label>Correo<input id="libre_user" type="email" maxlength="160" autocomplete="username"></label>
+      <label>Contraseña<input id="libre_password" type="password" maxlength="256" autocomplete="current-password"></label>
+      <label>Región<select id="libre_region"><option value="eu">Europa</option><option value="eu2">Europa 2</option><option value="us">Estados Unidos</option><option value="de">Alemania</option><option value="fr">Francia</option><option value="ae">Emiratos</option><option value="ap">Asia-Pacífico</option><option value="au">Australia</option><option value="ca">Canadá</option><option value="jp">Japón</option><option value="la">Latinoamérica</option><option value="ru">Rusia</option></select></label>
+      <details><summary>Compatibilidad avanzada</summary><label>Versión declarada de LibreLinkUp<input id="libre_version" maxlength="20" value="5.1.1"></label></details>
+      <p class="hint" id="libreMessage">Introduce la cuenta de LibreLinkUp.</p>
+      <button type="button" class="primary" id="loginLibre">Iniciar sesión y buscar usuarios</button>
+    </section>
+    <section id="patient" class="step">
+      <p class="eyebrow">CUENTA COMPARTIDA</p><h1>Elige el usuario</h1>
+      <p>La pantalla nunca cambiará de persona automáticamente si hay varias conexiones.</p>
+      <div id="patients" class="choices"><p class="hint">Inicia sesión en el paso anterior.</p></div>
+    </section>
+    <section id="location" class="step">
+      <p class="eyebrow">OPCIONAL</p><h1>Tu ubicación</h1>
+      <p>Selecciona tu localidad para ver el clima. Puedes guardarla ahora o añadirla más tarde en Ajustes.</p>
+      <div class="row"><label>Localidad<input id="citySearch" maxlength="80" placeholder="Tu localidad"></label><button type="button" id="searchCity">Buscar</button></div>
+      <p class="hint" id="locationMessage">Selecciona un resultado para fijar coordenadas y zona horaria.</p>
+      <div id="locations" class="choices"></div>
+      <input id="city" type="hidden"><input id="latitude" type="hidden"><input id="longitude" type="hidden"><input id="timezone" type="hidden" value="Europe/Madrid">
+    </section>
+    <section id="finish" class="step">
+      <p class="eyebrow">RESUMEN</p><h1>Guardar y cerrar</h1>
+      <div id="summary" class="summary"></div>
+      <div class="warning">LibreLinkUp utiliza una interfaz privada que Abbott puede cambiar. Confirma siempre las decisiones y alertas en el sistema oficial del sensor.</div>
+      <button type="submit" class="primary" id="save">Guardar permanentemente y cerrar</button>
+      <hr><button type="button" class="danger" id="reset">Borrar toda la configuración</button>
+    </section>
+  </form>
+  <p id="message" role="status"></p>
+</main>
+<footer>Los ajustes se guardan en la memoria NVS del ESP32 y sobreviven a reinicios y apagados. Las credenciales no están cifradas en esta versión alfa.</footer>
+</body>
+</html>
