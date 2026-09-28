@@ -1,12 +1,12 @@
 # gluco_waveshare
 
-Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.3** en español. Código fuente bajo licencia MIT.
+Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX**. Versión **0.8.4** en español. Código fuente bajo licencia MIT.
 
 > Proyecto personal no afiliado a Waveshare ni a Abbott. Utiliza LibreLinkUp, cuya API no es pública y puede cambiar. No sustituye el sensor, la aplicación oficial ni sus alarmas; verifica allí las lecturas antes de tomar decisiones de tratamiento.
 
 ## Funciones
 
-- Glucosa, flecha de tendencia y gráfica de **8 horas** con horas reales. Toca dentro de la gráfica para destacar la medición más cercana y consultar su fecha, hora y valor. Colores: rojo <70; verde 70–180; amarillo >180–240; naranja >240 mg/dL.
+- Glucosa, flecha de tendencia y gráfica de **10 horas** con horas reales. Toca dentro de la gráfica para destacar una medición; la marca se borra al apagar la pantalla o al actualizar la lectura. Si LibreLinkUp entrega unas 8 horas, el resto se completa con mediciones recibidas mientras el equipo siga encendido. Colores: rojo <70; verde 70–180; amarillo >180–240; naranja >240 mg/dL.
 - Selector de personas que comparten lecturas con la **cuenta receptora LibreLinkUp**, accesible desde la pantalla de glucosa.
 - Reloj, fecha, clima actual, sensación térmica, máxima y mínima; previsión de seis horas o cuatro días.
 - Configuración desde el móvil con dos QR: Wi-Fi temporal primero, servicios a través de la red doméstica después.
@@ -47,7 +47,7 @@ cd firmware
 
 Sustituye `/dev/ttyACM0` por el puerto detectado: puede ser `/dev/ttyUSB0`. La primera compilación descarga dependencias. Si falta permiso para acceder al puerto, ejecuta `sudo usermod -aG dialout "$USER"`, cierra sesión y vuelve a entrar.
 
-**Si ya tenías gluco_waveshare, no ejecutes `erase`:** al borrar toda la flash también desaparecen Wi-Fi, cuenta y ubicación. La tabla de particiones de 0.8.3 es la misma que la de 0.8.0. Para actualizar desde la raíz puedes usar `./actualizar.sh /dev/ttyACM0`, que solo ejecuta `upload`. Antes, haz una [copia de NVS](docs/COPIA_NVS.md) si necesitas proteger los ajustes ante un error de carga. Para Windows, pasos iniciales y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
+**Si ya tenías gluco_waveshare, no ejecutes `erase`:** al borrar toda la flash también desaparecen Wi-Fi, cuenta y ubicación. La tabla de particiones de 0.8.4 es la misma que la de 0.8.0. Para actualizar desde la raíz usa `./actualizar.sh /dev/ttyACM0`: guarda una copia de NVS antes de ejecutar `upload` y cancela la carga si la copia falla. Si los datos ya desaparecieron, el firmware no puede reconstruirlos sin una copia anterior. Para Windows, pasos iniciales y solución de problemas: [docs/INSTALACION.md](docs/INSTALACION.md).
 
 ## Primer arranque
 

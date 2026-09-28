@@ -21,6 +21,7 @@ String apName, apPass, csrf;
 std::atomic<PortalMode> mode{PortalMode::Off};
 bool routesReady = false;
 bool serverRunning = false;
+const char *settingsLoadState="missing";
 uint32_t started = 0, transitionAt = 0, closeAt = 0, rebootAt = 0, wifiDeadline = 0;
 constexpr uint32_t kPortalMs = 10 * 60 * 1000;
 constexpr uint32_t kWifiConnectMs = 25000;
@@ -127,6 +128,7 @@ bool persist(const Config &next) {
         p.end();
     }
     xSemaphoreGive(storageMutex);
+    if(ok)displayResync();
     return ok;
 }
 
@@ -182,6 +184,7 @@ void getConfig() {
     if(!lastStage[0])lastStage=appPreviousFaultStage(1);
     if(!lastStage[0])lastStage=appPreviousFaultStage(0);
     d["last_fault_stage"] = lastStage;
+    d["settings_state"] = settingsLoadState;
     String json; serializeJson(d, json);
     web.send(200, "application/json", json);
 }
@@ -197,6 +200,7 @@ void wifiConnect() {
     next.ssid = ssid; next.wifiPass = pass;
     if (!persist(next)) { fail(500, "No se pudo guardar el Wi-Fi en la memoria"); return; }
     config = next;
+    settingsLoadState="ok";
     configRevision.fetch_add(1, std::memory_order_release);
     web.send(200, "application/json",
         "{\"saved\":true,\"message\":\"Wi-Fi guardado. Vuelve a la red de casa y espera el segundo QR.\"}");
@@ -375,6 +379,7 @@ void save() {
     if (!validate(next, error)) { fail(400, error); return; }
     if (!persist(next)) { fail(500, "No se pudo guardar la configuración en NVS"); return; }
     config = next;
+    settingsLoadState="ok";
     configRevision.fetch_add(1, std::memory_order_release);
     configTzTime(config.timezone=="Atlantic/Canary"?"WET0WEST,M3.5.0/1,M10.5.0":
                  config.timezone=="UTC"?"UTC0":"CET-1CEST,M3.5.0,M10.5.0/3",
@@ -467,8 +472,24 @@ void startLocalNetwork() {
 void configLoad() {
     Preferences p; String raw;
     if (p.begin("glucowave", true)) { raw = p.getString("settings", ""); p.end(); }
-    if (raw.isEmpty()) return;
-    Doc d(10000); if (!deserializeJson(d, raw)) fromJson(d.as<JsonVariantConst>(), config);
+    else settingsLoadState="unavailable";
+    if (raw.isEmpty()) {
+        Serial.printf("[NVS] Ajustes no cargados (%s); se abre configuración\n",settingsLoadState);
+        return;
+    }
+    Doc d(10000);
+    const auto error=deserializeJson(d,raw);
+    if(error||!d.is<JsonObject>()){
+        settingsLoadState="invalid";
+        Serial.printf("[NVS] Ajustes presentes pero JSON no válido (%s); no se sobrescriben\n",error.c_str());
+        return;
+    }
+    fromJson(d.as<JsonVariantConst>(),config);
+    settingsLoadState="ok";
+    Serial.printf("[NVS] Ajustes cargados: Wi-Fi %s, LibreLinkUp %s, usuario %s\n",
+                  config.ssid.isEmpty()?"ausente":"presente",
+                  config.libreUser.isEmpty()?"ausente":"presente",
+                  config.patientId.isEmpty()?"ausente":"presente");
 }
 
 bool configSelectPatient(const char *id, const char *name) {

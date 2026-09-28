@@ -7,7 +7,7 @@
 #include <atomic>
 #include "core.hpp"
 
-constexpr const char *APP_VERSION = "0.8.3";
+constexpr const char *APP_VERSION = "0.8.4";
 constexpr size_t MAX_CONNECTIONS = 12;
 enum class PortalMode : uint8_t { Off, WifiAccessPoint, WaitingForWifi, LocalNetwork };
 struct Config {
@@ -67,10 +67,12 @@ void displayInit();
 void displayWake();
 void displaySleep();
 bool displayIsSleeping();
+void displayResync();
 void uiInit();
 void uiTick();
 void uiShowSetup();
 void uiShowHome();
+void uiClearGraphSelection();
 void networkStart();
 const char *weatherText(int code);
 void markPlannedRestart();

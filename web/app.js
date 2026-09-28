@@ -111,6 +111,9 @@ async function start(){
       const stage=cfg.last_fault_stage?` · fase: ${cfg.last_fault_stage}`:"";
       message(`Último reinicio: ${cfg.last_reset_reason}${stage}`,true);
     }
+    if(cfg.settings_state==="invalid")message("Hay ajustes en NVS, pero no se pudieron leer. Conserva una copia de NVS antes de volver a guardar.",true);
+    else if(cfg.settings_state==="unavailable")message("No se pudo abrir la memoria de ajustes NVS. Evita guardar de nuevo hasta comprobar la placa.",true);
+    else if(cfg.settings_state==="missing")message("No aparecen ajustes guardados en NVS. Comprueba si tienes una copia anterior antes de configurar de nuevo.",true);
     for(const id of ["ssid","libre_user","libre_region","libre_version","city","latitude","longitude","timezone"])if($(id))$(id).value=cfg[id]??"";
     if(cfg.has_wifi_password)$("wifi_password").placeholder="Guardada; deja vacío para conservar";
     if(cfg.has_libre_password)$("libre_password").placeholder="Guardada; deja vacío para conservar";

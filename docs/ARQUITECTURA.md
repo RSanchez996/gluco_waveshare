@@ -12,8 +12,9 @@ La inicialización conserva la secuencia del ejemplo oficial de Waveshare
 5. LVGL 8.4 con un buffer interno de 18 líneas.
 
 Se usa un framebuffer RGB y el buffer de rebote de diez líneas del perfil
-Waveshare v1.0.4. Antes de iniciar el panel se fija el reloj RGB en 14 MHz,
-igual que en la versión 0.8.0 que funcionó en esta placa.
+Waveshare v1.0.4. Antes de iniciar el panel se fija el reloj RGB en 12 MHz
+para reducir la demanda de PSRAM mientras Wi-Fi está activo. Después de
+guardar ajustes en NVS se resincroniza el barrido del panel RGB.
 
 ## Arranque por fases
 
@@ -87,10 +88,10 @@ comparten el mutex HTTPS y no hacen llamadas LVGL desde sus tareas. Las tareas
 temporales retornan de sus funciones de trabajo antes de borrarse para liberar
 documentos JSON y cadenas dinámicas.
 
-## Histórico de 8 horas y usuarios
+## Histórico de 10 horas y usuarios
 
 Cada consulta combina los datos devueltos por LibreLinkUp con el buffer local,
-agrupa muestras por intervalos de cinco minutos, descarta valores fuera de ocho
+agrupa muestras por intervalos de cinco minutos, descarta valores fuera de diez
 horas y conserva hasta 120 puntos. El histórico permanece solo en RAM y se vuelve a solicitar tras reiniciar: no
 se escribe flash durante la actualización periódica. La lista de conexiones
 LibreLinkUp sí se conserva en NVS y se refresca en segundo plano. El botón `Usuario` permite seleccionar
@@ -103,7 +104,7 @@ El reloj continúa durante la espera y la consulta muestra segundos transcurrido
 
 ## Interfaz v0.8.1
 
-La gráfica de ocho horas convierte cada marca del eje horizontal a la hora
+La gráfica de diez horas convierte cada marca del eje horizontal a la hora
 local del reloj. La portada tiene botones de clima y usuario y un engranaje
 para Ajustes. Tocar la zona superior, por encima de la gráfica, apaga solo la
 retroiluminación cuando se muestra la portada; tocar la gráfica selecciona la

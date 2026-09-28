@@ -22,13 +22,20 @@ cd firmware
 ./.build-venv/bin/pio device list
 ```
 
-Sustituye `/dev/ttyACM0` si `device list` muestra `/dev/ttyUSB0` u otro puerto. Para instalar o actualizar, el comando habitual es **solo**:
+Sustituye `/dev/ttyACM0` si `device list` muestra `/dev/ttyUSB0` u otro puerto. Para una primera instalación sin ajustes previos:
 
 ```bash
 ./.build-venv/bin/pio run -t upload --upload-port /dev/ttyACM0
 ```
 
-**No uses `erase` para actualizar:** destruye el Wi-Fi, las credenciales y cualquier otra información guardada. Si la placa ya tiene datos configurados, haz antes una [copia de NVS](COPIA_NVS.md). Esta versión conserva las particiones de 0.8.1. Solo si decides hacer una instalación completamente limpia desde una tabla incompatible y aceptas perder los datos se ejecuta el borrado total, antes del `upload`:
+Para actualizar con ajustes existentes, vuelve a la raíz del proyecto y utiliza:
+
+```bash
+cd ..
+./actualizar.sh /dev/ttyACM0
+```
+
+El script copia NVS en `nvs_backups/` antes de grabar y cancela el `upload` si no puede hacer la copia. **No uses `erase` para actualizar:** destruye el Wi-Fi, las credenciales y cualquier otra información guardada. Esta versión conserva las particiones de 0.8.0. Solo si decides hacer una instalación completamente limpia desde una tabla incompatible y aceptas perder los datos se ejecuta el borrado total, antes del `upload`:
 
 ```bash
 ./.build-venv/bin/pio run -t erase --upload-port /dev/ttyACM0

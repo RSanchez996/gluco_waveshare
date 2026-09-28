@@ -1,5 +1,20 @@
 # Cambios
 
+## 0.8.4
+
+- Reduce de nuevo el reloj RGB a 12 MHz durante Wi-Fi y resincroniza el panel
+  después de guardar ajustes o la lista de usuarios en NVS. Espressif advierte
+  de interrupciones del barrido RGB al escribir flash en este modo de PSRAM.
+- La pantalla del QR Wi-Fi deja de redibujar la misma etiqueta cada medio
+  segundo; solo la actualiza si cambian la red o la contraseña mostradas.
+- El actualizador de Ubuntu copia primero la partición NVS de 393216 bytes y
+  cancela el `upload` si no se puede leer; no utiliza `erase`.
+- El portal informa si los ajustes NVS faltan o si están presentes pero su
+  contenido JSON no se puede interpretar, sin mostrar las contraseñas.
+- Amplía la ventana de la gráfica a diez horas mediante acumulación en RAM;
+  la marca azul se quita al apagar la pantalla o al recibir una nueva lectura.
+- Revisión estática; falta comprobar el resultado en el dispositivo.
+
 ## 0.8.3
 
 - Revierte la tarea periódica de datos a CPU1/prioridad 0, como en 0.8.0.

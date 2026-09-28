@@ -2,6 +2,7 @@
 #include "fonts.hpp"
 #include <esp_display_panel.hpp>
 #include <esp_heap_caps.h>
+#include <esp_lcd_panel_rgb.h>
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
 namespace {
@@ -26,10 +27,10 @@ void displayInit(){
     if(lcd){
         lcd->configFrameBufferNumber(1);
         // El perfil Waveshare v1.0.4 usa RGB a 16 MHz y bounce buffer de 10
-        // líneas. Se conserva el reloj de 14 MHz que funcionó en 0.8.0.
+        // líneas. 12 MHz reduce la demanda de PSRAM con Wi-Fi activo.
         auto *bus=lcd->getBus();
         if(bus&&bus->getBasicAttributes().type==ESP_PANEL_BUS_TYPE_RGB&&
-           !static_cast<BusRGB *>(bus)->configRGB_FreqHz(14*1000*1000))
+           !static_cast<BusRGB *>(bus)->configRGB_FreqHz(12*1000*1000))
             fatal("No se pudo configurar el reloj RGB");
     }
     if(!board->begin())fatal("board->begin() fallo");
@@ -49,5 +50,14 @@ void displayInit(){
     Serial.println("[BOOT 3/6] LCD 800x480, LVGL y tactil preparados");
 }
 void displayWake(){screenSleeping=false;if(board&&board->getBacklight())board->getBacklight()->on();}
-void displaySleep(){screenSleeping=true;if(board&&board->getBacklight())board->getBacklight()->off();Serial.println("[PANTALLA] Retroiluminacion apagada; toca para encender");}
+void displaySleep(){uiClearGraphSelection();screenSleeping=true;if(board&&board->getBacklight())board->getBacklight()->off();Serial.println("[PANTALLA] Retroiluminacion apagada; toca para encender");}
 bool displayIsSleeping(){return screenSleeping;}
+void displayResync(){
+    if(!board||!board->getLCD())return;
+    auto *lcd=board->getLCD();
+    auto *bus=lcd->getBus();
+    if(bus&&bus->getBasicAttributes().type==ESP_PANEL_BUS_TYPE_RGB){
+        auto handle=lcd->getRefreshPanelHandle();
+        if(handle)esp_lcd_rgb_panel_restart(handle);
+    }
+}

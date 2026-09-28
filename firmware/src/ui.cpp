@@ -61,7 +61,7 @@ void drawGraph(lv_event_t *e){
         if(snapshot.points[i].glucose<40)low=20;
     }
     auto py=[&](double value){return y+h-(value-low)*h/(high-low);};
-    drawText(ctx,x+5,bounds.y1+7,180,"ÚLTIMAS 8 HORAS",theme::Blue);
+    drawText(ctx,x+5,bounds.y1+7,180,"ÚLTIMAS 10 HORAS",theme::Blue);
     lv_draw_rect_dsc_t band;lv_draw_rect_dsc_init(&band);
     band.bg_color=c(theme::Green);band.bg_opa=LV_OPA_10;
     lv_area_t safe{lv_coord_t(x),lv_coord_t(py(180)),lv_coord_t(x+w),lv_coord_t(py(70))};
@@ -72,12 +72,12 @@ void drawGraph(lv_event_t *e){
         char txt[8];snprintf(txt,sizeof(txt),"%d",value);
         drawText(ctx,bounds.x1+4,py(value)-8,34,txt,threshold,LV_TEXT_ALIGN_RIGHT);
     }
-    for(int i=0;i<5;++i){
-        const int px=x+i*w/4;
+    for(int i=0;i<6;++i){
+        const int px=x+i*w/5;
         drawLine(ctx,px,y,px,y+h,theme::Grid,1);
         char tick[10]="--:--";
         if(now>=1700000000){
-            const time_t t=now-(4-i)*2*60*60;tm local{};
+            const time_t t=now-(5-i)*2*60*60;tm local{};
             localtime_r(&t,&local);strftime(tick,sizeof(tick),"%H:%M",&local);
         }
         drawText(ctx,std::min(px-24,x+w-48),y+h+8,50,tick,theme::Muted);
@@ -407,6 +407,11 @@ void uiInit(){
 }
 void uiShowSetup(){if(!portalActive())portalStart();buildSetup();}
 void uiShowHome(){if(page==Page::Setup)buildHome();}
+void uiClearGraphSelection(){
+    if(!selectedGraphEpoch)return;
+    selectedGraphEpoch=0;
+    if(page==Page::Home&&graph)lv_obj_invalidate(graph);
+}
 void uiTick(){
     const PendingPage next=pendingPage;
     pendingPage=PendingPage::None;
@@ -419,7 +424,15 @@ void uiTick(){
         case PendingPage::None: break;
     }
     xSemaphoreTake(stateMutex,portMAX_DELAY);memcpy(&snapshot,sharedState,sizeof(snapshot));xSemaphoreGive(stateMutex);
-    if(page==Page::Setup){if(portalMode()!=renderedPortal){buildSetup();return;}if(renderedPortal==PortalMode::WifiAccessPoint&&setupInfo){String text="Red temporal:  "+portalSsid()+"\n\nClave:  "+portalPassword()+"\n\nPortal:  http://192.168.4.1\n\nTras guardar se cerrará esta red y aparecerá un segundo QR.";lv_label_set_text(setupInfo,text.c_str());}return;}
+    if(page==Page::Setup){
+        if(portalMode()!=renderedPortal){buildSetup();return;}
+        if(renderedPortal==PortalMode::WifiAccessPoint&&setupInfo){
+            String text="Red temporal:  "+portalSsid()+"\n\nClave:  "+portalPassword()+"\n\nPortal:  http://192.168.4.1\n\nTras guardar se cerrará esta red y aparecerá un segundo QR.";
+            if(strcmp(lv_label_get_text(setupInfo),text.c_str())!=0)
+                lv_label_set_text(setupInfo,text.c_str());
+        }
+        return;
+    }
     if(page==Page::Users){if(renderedConnections!=snapshot.connectionsFetched||renderedConnectionCount!=snapshot.connectionCount||strcmp(renderedConnectionsError,snapshot.connectionsError))buildUsers();return;}
     if(page==Page::Home && pendingPatientId[0]){
         if(strcmp(snapshot.activePatientId,pendingPatientId)==0 ||
@@ -453,6 +466,8 @@ void uiTick(){
     const uint32_t requestElapsed=snapshot.glucoseRequestStartedMs ? millis()-snapshot.glucoseRequestStartedMs : 0;
     const int64_t requestStep=snapshot.glucoseRequestStartedMs ? requestElapsed/15000 : -1;
     const bool chartChanged=renderedPoints!=snapshot.pointCount||renderedLatestEpoch!=latestEpoch||renderedLatestValue!=latestValue;
+    if(selectedGraphEpoch&&renderedGlucose>=0&&snapshot.glucoseFetched>0&&
+       snapshot.glucoseFetched!=renderedGlucose)uiClearGraphSelection();
     if(chartChanged&&selectedGraphEpoch){
         bool found=false;
         for(size_t i=0;i<snapshot.pointCount;++i)if(snapshot.points[i].epoch==selectedGraphEpoch){found=true;break;}

@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 namespace gluco {
-constexpr int64_t kHistorySeconds = 8 * 60 * 60;
+constexpr int64_t kHistorySeconds = 10 * 60 * 60;
 constexpr int64_t kSampleSeconds = 5 * 60;
 constexpr int64_t kStaleSeconds = 10 * 60;
 constexpr int64_t kMaxGapSeconds = 12 * 60;

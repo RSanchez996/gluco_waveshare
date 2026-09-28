@@ -1,4 +1,4 @@
-# Empezar con gluco_waveshare 0.8.2
+# Empezar con gluco_waveshare 0.8.4
 
 Este repositorio contiene el **código fuente** para la Waveshare ESP32-S3-Touch-LCD-4.3B / 4.3B-BOX. No contiene binarios compilados, credenciales ni imágenes de la demo de fábrica.
 
@@ -10,4 +10,4 @@ Este repositorio contiene el **código fuente** para la Waveshare ESP32-S3-Touch
 
 **Actualizaciones:** si ya tienes gluco_waveshare, realiza solo `upload`; `erase` borra NVS y requiere volver a introducir Wi-Fi, credenciales y usuario. El primer borrado solo se describe para una instalación limpia desde otra imagen o tabla de particiones.
 
-La pantalla muestra glucosa y su historial de ocho horas, reloj y pronóstico. No incluye alarmas ni sustituye la aplicación o el receptor oficiales. [README](README.md) · [Seguridad y límites](docs/SEGURIDAD_Y_LIMITES.md) · [Licencia MIT](LICENSE).
+La pantalla muestra glucosa y su historial de hasta diez horas, reloj y pronóstico. No incluye alarmas ni sustituye la aplicación o el receptor oficiales. [README](README.md) · [Seguridad y límites](docs/SEGURIDAD_Y_LIMITES.md) · [Licencia MIT](LICENSE).

@@ -161,11 +161,12 @@ uint32_t LibreClient::read(AppState &state){
     size_t accepted=0;const size_t received=d["data"]["graphData"].size();
     for(JsonObjectConst p:d["data"]["graphData"].as<JsonArrayConst>())if(addLibre(state,p))++accepted;
     if(addLibre(state,d["data"]["connection"]["glucoseMeasurement"].as<JsonObjectConst>()))++accepted;
-    Serial.printf("[LIBRE] Gráfica recibida: %u registros, %u válidos dentro de 8 h\n",unsigned(received),unsigned(accepted));
+    Serial.printf("[LIBRE] Gráfica recibida: %u registros, %u válidos dentro de 10 h\n",unsigned(received),unsigned(accepted));
     if(!accepted){text(state.glucoseError,"LibreLinkUp respondió, pero las fechas o lecturas no son válidas");return 300;}
     state.pointCount=gluco::normalize(state.points,state.pointCount,time(nullptr));
     if(!state.pointCount){text(state.glucoseError,"Sin lecturas válidas; revisa LibreLinkUp");return 300;}
-    // La gráfica de ocho horas se reconstruye desde LibreLinkUp al arrancar.
+    // El histórico se acumula en RAM hasta 10 h; el proveedor puede entregar
+    // menos registros por consulta y las horas anteriores aparecen con el uso.
     // Evitar escrituras NVS periódicas mientras la LCD RGB lee PSRAM.
     state.glucoseFetched=time(nullptr);state.glucoseError[0]=0;return 120;
 }
@@ -182,5 +183,5 @@ void connectionCacheSave(const AppState &state){
     if(!state.connectionCount)return;LibreCredentials c{config.libreUser,config.librePass,config.libreRegion,config.libreVersion};
     xSemaphoreTake(storageMutex,portMAX_DELAY);Preferences p;if(p.begin("glucousers",false)){
         p.putString("owner",credentialIdentity(c));p.putBytes("items",state.connections,state.connectionCount*sizeof(ConnectionChoice));p.end();
-    }xSemaphoreGive(storageMutex);
+    }xSemaphoreGive(storageMutex);displayResync();
 }
