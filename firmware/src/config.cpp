@@ -15,6 +15,7 @@
 
 using net::Doc;
 std::atomic<uint32_t> configRevision{0};
+std::atomic<bool> configUiActive{false};
 
 namespace {
 WebServer web(80);
@@ -27,6 +28,11 @@ const char *settingsLoadState="missing";
 uint32_t started = 0, transitionAt = 0, closeAt = 0, rebootAt = 0, wifiDeadline = 0;
 constexpr uint32_t kPortalMs = 10 * 60 * 1000;
 constexpr uint32_t kWifiConnectMs = 25000;
+// La tarea periódica HTTPS, estable en esta placa, usa CPU1/prioridad 0.
+// Durante los ajustes se pausa; las consultas temporales usan la misma
+// afinidad para liberar CPU0 a Wi-Fi y el barrido RGB. LVGL sigue en loopTask
+// y conserva su prioridad superior a la de este trabajo.
+constexpr BaseType_t kHttpsCore = 1;
 enum class LibreJobState : uint8_t { Idle, Running, Ready, Failed };
 std::atomic<LibreJobState> libreJobState{LibreJobState::Idle};
 ConnectionChoice *libreJobChoices = nullptr;
@@ -35,8 +41,7 @@ char libreJobRegion[8]{};
 char libreJobError[220]{};
 enum class GeocodeJobState : uint8_t { Idle, Running, Ready, Failed };
 std::atomic<GeocodeJobState> geocodeJobState{GeocodeJobState::Idle};
-struct GeocodeChoice { char name[140]{}; float latitude=0, longitude=0; char timezone[32]{}; };
-GeocodeChoice geocodeChoices[8]{};
+LocationChoice geocodeChoices[8]{};
 size_t geocodeCount=0;
 char geocodeError[160]{};
 struct NearbyWifi { String ssid; int rssi = -100; bool secured = true; };
@@ -45,6 +50,14 @@ size_t nearbyWifiCount = 0;
 bool wifiScanPending = false, wifiScanReady = false;
 bool wifiScanHttpHeld = false;
 uint32_t wifiScanStarted = 0, lastWifiScan = 0, lastWifiScanCheck = 0;
+LibreCredentials stagedDeviceLogin;
+enum class MutationKind:uint8_t { Wifi, RemoveWifi, Location, LibreUser };
+struct Mutation {
+    MutationKind kind; String ssid,password; bool connectNow=false;
+    LocationChoice location{}; ConnectionChoice person{};
+};
+std::atomic<SetupJob> mutationState{SetupJob::Idle};
+char mutationError[160]{};
 
 void cancelWifiScan() {
     if (wifiScanPending) esp_wifi_scan_stop();
@@ -237,6 +250,7 @@ void getConfig() {
     d["ip"] = WiFi.localIP().toString();
     d["portal_mode"] = mode.load() == PortalMode::WifiAccessPoint ? "wifi" : "online";
     d["last_reset_reason"] = appResetReason();
+    d["uptime_seconds"] = millis() / 1000;
     const char *lastStage=appPreviousFaultStage(2);
     if(!lastStage[0])lastStage=appPreviousFaultStage(1);
     if(!lastStage[0])lastStage=appPreviousFaultStage(0);
@@ -387,6 +401,7 @@ void runLibreLogin(LibreCredentials *credentials) {
 
 void libreLoginTask(void *argument) {
     runLibreLogin(static_cast<LibreCredentials *>(argument));
+    appDiagnosticStage("Libre: inactivo");
     // Tras retornar se han destruido los String y documentos temporales.
     vTaskDelete(nullptr);
 }
@@ -418,9 +433,8 @@ void libreLogin() {
     libreJobState.store(LibreJobState::Running, std::memory_order_release);
     if (libreJobChoices) { heap_caps_free(libreJobChoices); libreJobChoices = nullptr; }
     libreJobCount = 0; libreJobRegion[0] = libreJobError[0] = 0;
-    // HTTPS corre en el otro núcleo y con prioridad 0; la interfaz conserva
-    // su núcleo y las tareas del sistema pueden adelantar a este trabajo.
-    if (xTaskCreatePinnedToCore(libreLoginTask, "libre-login", 18432, credentials, 0, nullptr, appWorkerCore()) != pdPASS) {
+    // El POST responde ya; HTTPS se hace fuera de su callback y a prioridad 0.
+    if (xTaskCreatePinnedToCore(libreLoginTask, "libre-login", 18432, credentials, 0, nullptr, kHttpsCore) != pdPASS) {
         delete credentials; libreJobState.store(LibreJobState::Failed, std::memory_order_release);
         strlcpy(libreJobError, "No se pudo crear la tarea HTTPS", sizeof(libreJobError));
         fail(500, libreJobError); return;
@@ -447,10 +461,18 @@ void libreStatus() {
 }
 
 void runGeocode(const String &query) {
-    Doc result(28 * 1024);
+    // Open-Meteo devuelve muchos metadatos que no utiliza la pantalla.
+    // Filtrar durante el parseo reduce la presión de PSRAM mientras el panel
+    // RGB necesita leer continuamente su framebuffer desde ella.
+    Doc filter(1024);
+    filter["message"]=true;
+    JsonObject place=filter.createNestedArray("results").createNestedObject();
+    place["name"]=true;place["admin1"]=true;place["country"]=true;
+    place["latitude"]=true;place["longitude"]=true;place["timezone"]=true;
+    Doc result(12 * 1024);
     appDiagnosticStage("Portal: geocodificación HTTPS");
     const auto r=net::request("https://geocoding-api.open-meteo.com/v1/search?count=8&language=es&format=json&name="+
-                              net::encode(query),result);
+                              net::encode(query),result,"GET","",{},24*1024,filter.as<JsonVariantConst>());
     if(r.status!=200){
         strlcpy(geocodeError,r.error.c_str(),sizeof(geocodeError));
         geocodeJobState.store(GeocodeJobState::Failed,std::memory_order_release);
@@ -477,6 +499,10 @@ void geocodeTask(void *argument) {
     auto *query=static_cast<String *>(argument);
     runGeocode(*query);
     delete query;
+    // Solicitar una sola resincronización al hilo de LVGL cuando se liberen
+    // los buffers de la búsqueda, incluso si el usuario salió de Ajustes.
+    displayRequestResync();
+    appDiagnosticStage("Portal: inactivo");
     vTaskDelete(nullptr);
 }
 
@@ -498,7 +524,7 @@ void geocode() {
     if(!job){fail(500,"Memoria insuficiente para buscar la localidad");return;}
     geocodeCount=0;geocodeError[0]=0;
     geocodeJobState.store(GeocodeJobState::Running,std::memory_order_release);
-    if(xTaskCreatePinnedToCore(geocodeTask,"geocode",14336,job,0,nullptr,appWorkerCore())!=pdPASS){
+    if(xTaskCreatePinnedToCore(geocodeTask,"geocode",14336,job,0,nullptr,kHttpsCore)!=pdPASS){
         delete job;
         geocodeJobState.store(GeocodeJobState::Failed,std::memory_order_release);
         fail(500,"No se pudo crear la tarea meteorológica");return;
@@ -631,6 +657,260 @@ void startLocalNetwork() {
 }
 }
 
+bool deviceWifiScan(String &error) {
+    if (wifiScanPending) return true;
+    if (libreJobState.load()==LibreJobState::Running ||
+        geocodeJobState.load()==GeocodeJobState::Running) {
+        error="Espera a que termine la consulta HTTPS"; return false;
+    }
+    const uint32_t now=millis();
+    if (lastWifiScan && now-lastWifiScan<15000 && wifiScanReady) return true;
+    if (lastWifiScan && now-lastWifiScan<15000) {
+        error="Espera antes de buscar redes de nuevo"; return false;
+    }
+    if (httpMutex && xSemaphoreTake(httpMutex,0)!=pdTRUE) {
+        error="La red está ocupada; vuelve a buscar en unos segundos"; return false;
+    }
+    wifiScanHttpHeld=httpMutex!=nullptr;
+    wifiScanReady=false;nearbyWifiCount=0;lastWifiScan=now;
+    const int found=WiFi.scanNetworks(true,false,false,150);
+    if(found==WIFI_SCAN_RUNNING){wifiScanPending=true;wifiScanStarted=now;return true;}
+    if(found>=0){collectWifiScan(found);return true;}
+    cancelWifiScan();error="No se pudo escanear; escribe el SSID";return false;
+}
+
+SetupJob deviceWifiResults(WifiScanEntry *out,size_t capacity,size_t &count,String &error){
+    count=0;
+    if(wifiScanPending){
+        const int found=WiFi.scanComplete();
+        if(found==WIFI_SCAN_RUNNING && millis()-wifiScanStarted<8000)return SetupJob::Running;
+        if(found<0){cancelWifiScan();error="Búsqueda Wi-Fi agotada";return SetupJob::Failed;}
+        collectWifiScan(found);
+    }
+    if(!wifiScanReady)return SetupJob::Idle;
+    for(size_t i=0;i<nearbyWifiCount&&count<capacity;++i){
+        strlcpy(out[count].ssid,nearbyWifi[i].ssid.c_str(),sizeof(out[count].ssid));
+        out[count].rssi=nearbyWifi[i].rssi;out[count].secure=nearbyWifi[i].secured;++count;
+    }
+    return SetupJob::Ready;
+}
+
+bool deviceSaveWifi(const String &name,const String &password,bool connectNow,String &error){
+    String ssid=name;ssid.trim();
+    String pass=password;
+    if(pass.isEmpty()){
+        if(ssid==config.ssid)pass=config.wifiPass;
+        for(size_t i=0;i<config.extraWifiCount;++i)
+            if(ssid==config.extraWifi[i].ssid)pass=config.extraWifi[i].password;
+    }
+    if(!validWifi(ssid,pass,error))return false;
+    const bool alreadyConnected=WiFi.status()==WL_CONNECTED && WiFi.SSID()==ssid &&
+                                config.ssid==ssid && config.wifiPass==pass;
+    Config next=config;
+    const bool makePrimary=connectNow || next.ssid.isEmpty();
+    if(makePrimary){
+        for(size_t i=0;i<next.extraWifiCount;){
+            if(next.extraWifi[i].ssid==ssid){
+                for(size_t j=i+1;j<next.extraWifiCount;++j)next.extraWifi[j-1]=next.extraWifi[j];
+                --next.extraWifiCount;
+            }else ++i;
+        }
+        if(next.ssid!=ssid && !next.ssid.isEmpty()){
+            if(next.extraWifiCount==MAX_EXTRA_WIFI){error="Libera una red guardada antes de cambiar la principal";return false;}
+            next.extraWifi[next.extraWifiCount++]={next.ssid,next.wifiPass};
+        }
+        next.ssid=ssid;next.wifiPass=pass;
+    }else{
+        if(ssid==next.ssid){next.wifiPass=pass;}
+        else{
+            size_t i=0;while(i<next.extraWifiCount&&next.extraWifi[i].ssid!=ssid)++i;
+            if(i==next.extraWifiCount&&i==MAX_EXTRA_WIFI){error="Solo caben cinco redes en total";return false;}
+            if(i==next.extraWifiCount)++next.extraWifiCount;
+            next.extraWifi[i]={ssid,pass};
+        }
+    }
+    if(!persist(next)){error="No se pudo guardar la red en NVS";return false;}
+    config=next;settingsLoadState="ok";
+    configRevision.fetch_add(1,std::memory_order_release);
+    if(makePrimary&&!alreadyConnected){WiFi.mode(WIFI_STA);WiFi.begin(ssid.c_str(),pass.c_str());}
+    return true;
+}
+
+bool deviceRemoveWifi(const String &ssid,String &error){
+    Config next=config;
+    bool reconnect=false;
+    if(ssid==next.ssid){
+        if(!next.extraWifiCount){error="Añade otra red antes de eliminar la principal";return false;}
+        next.ssid=next.extraWifi[0].ssid;next.wifiPass=next.extraWifi[0].password;
+        reconnect=true;
+        for(size_t i=1;i<next.extraWifiCount;++i)next.extraWifi[i-1]=next.extraWifi[i];
+        --next.extraWifiCount;
+    }else{
+        size_t i=0;while(i<next.extraWifiCount&&next.extraWifi[i].ssid!=ssid)++i;
+        if(i==next.extraWifiCount){error="Red no guardada";return false;}
+        for(size_t j=i+1;j<next.extraWifiCount;++j)next.extraWifi[j-1]=next.extraWifi[j];
+        --next.extraWifiCount;
+    }
+    if(!persist(next)){error="No se pudo guardar el cambio en NVS";return false;}
+    config=next;configRevision.fetch_add(1,std::memory_order_release);
+    if(reconnect){WiFi.mode(WIFI_STA);WiFi.begin(config.ssid.c_str(),config.wifiPass.c_str());}
+    return true;
+}
+
+bool deviceGeocode(const String &name,String &error){
+    String query=name;query.trim();
+    if(WiFi.status()!=WL_CONNECTED){error="Conecta primero el Wi-Fi";return false;}
+    if(query.length()<2||query.length()>80){error="Escribe una localidad";return false;}
+    if(geocodeJobState.load()==GeocodeJobState::Running||
+       libreJobState.load()==LibreJobState::Running||wifiScanPending){
+        error="Espera a que termine la consulta anterior";return false;
+    }
+    String *job=new(std::nothrow) String(query);
+    if(!job){error="Memoria insuficiente";return false;}
+    geocodeCount=0;geocodeError[0]=0;
+    geocodeJobState.store(GeocodeJobState::Running,std::memory_order_release);
+    if(xTaskCreatePinnedToCore(geocodeTask,"geocode",14336,job,0,nullptr,kHttpsCore)!=pdPASS){
+        delete job;geocodeJobState.store(GeocodeJobState::Failed);
+        error="No se pudo crear la tarea de búsqueda";return false;
+    }
+    return true;
+}
+
+SetupJob deviceGeocodeResults(LocationChoice *out,size_t capacity,size_t &count,String &error){
+    count=0;const auto state=geocodeJobState.load(std::memory_order_acquire);
+    if(state==GeocodeJobState::Idle)return SetupJob::Idle;
+    if(state==GeocodeJobState::Running)return SetupJob::Running;
+    if(state==GeocodeJobState::Failed){error=geocodeError;return SetupJob::Failed;}
+    for(size_t i=0;i<geocodeCount&&count<capacity;++i)out[count++]=geocodeChoices[i];
+    return SetupJob::Ready;
+}
+
+bool deviceSaveLocation(const LocationChoice &choice,String &error){
+    Config next=config;next.city=choice.name;next.city.trim();
+    next.latitude=choice.latitude;next.longitude=choice.longitude;
+    next.timezone=choice.timezone;next.locationSet=true;
+    if(next.city.isEmpty()||next.city.length()>96||!isfinite(next.latitude)||!isfinite(next.longitude)||
+       next.latitude< -90||next.latitude>90||next.longitude< -180||next.longitude>180||
+       (next.timezone!="Europe/Madrid"&&next.timezone!="Atlantic/Canary"&&next.timezone!="UTC")){
+        error="Ubicación no válida";return false;
+    }
+    if(!persist(next)){error="No se pudo guardar la ubicación";return false;}
+    config=next;configRevision.fetch_add(1,std::memory_order_release);
+    configTzTime(config.timezone=="Atlantic/Canary"?"WET0WEST,M3.5.0/1,M10.5.0":
+                 config.timezone=="UTC"?"UTC0":"CET-1CEST,M3.5.0,M10.5.0/3",
+                 "pool.ntp.org","time.cloudflare.com","time.google.com");
+    return true;
+}
+
+bool deviceLibreLogin(const String &name,const String &password,const String &region,String &error){
+    if(WiFi.status()!=WL_CONNECTED){error="Conecta primero el Wi-Fi";return false;}
+    if(libreJobState.load()==LibreJobState::Running||
+       geocodeJobState.load()==GeocodeJobState::Running||wifiScanPending){
+        error="Espera a que termine la consulta anterior";return false;
+    }
+    LibreCredentials next{name,password,region,config.libreVersion};next.user.trim();
+    if(next.password.isEmpty()&&next.user==config.libreUser&&region==config.libreRegion)
+        next.password=config.librePass;
+    if(next.user.isEmpty()||next.user.length()>160||next.password.isEmpty()||
+       next.password.length()>256||!validRegion(next.region)){
+        error="Revisa el correo, la contraseña y la región";return false;
+    }
+    auto *job=new(std::nothrow) LibreCredentials(next);
+    if(!job){error="Memoria insuficiente";return false;}
+    stagedDeviceLogin=next;
+    if(libreJobChoices){heap_caps_free(libreJobChoices);libreJobChoices=nullptr;}
+    libreJobCount=0;libreJobError[0]=libreJobRegion[0]=0;
+    libreJobState.store(LibreJobState::Running,std::memory_order_release);
+    if(xTaskCreatePinnedToCore(libreLoginTask,"libre-login",18432,job,0,nullptr,kHttpsCore)!=pdPASS){
+        delete job;libreJobState.store(LibreJobState::Failed);
+        error="No se pudo crear la tarea LibreLinkUp";return false;
+    }
+    return true;
+}
+
+SetupJob deviceLibreResults(ConnectionChoice *out,size_t capacity,size_t &count,String &error){
+    count=0;const auto state=libreJobState.load(std::memory_order_acquire);
+    if(state==LibreJobState::Idle)return SetupJob::Idle;
+    if(state==LibreJobState::Running)return SetupJob::Running;
+    if(state==LibreJobState::Failed){error=libreJobError;return SetupJob::Failed;}
+    for(size_t i=0;i<libreJobCount&&count<capacity;++i)out[count++]=libreJobChoices[i];
+    return SetupJob::Ready;
+}
+
+bool deviceSaveLibreUser(const ConnectionChoice &choice,String &error){
+    if(!choice.id[0]||!choice.name[0]||stagedDeviceLogin.user.isEmpty()||
+       libreJobState.load()!=LibreJobState::Ready){error="Inicia sesión antes de elegir usuario";return false;}
+    Config next=config;
+    next.libreUser=stagedDeviceLogin.user;next.librePass=stagedDeviceLogin.password;
+    next.libreRegion=libreJobRegion[0]?libreJobRegion:stagedDeviceLogin.region;
+    next.libreVersion=stagedDeviceLogin.version;
+    next.patientId=choice.id;next.patientName=choice.name;
+    if(!persist(next)){error="No se pudo guardar LibreLinkUp en NVS";return false;}
+    config=next;configRevision.fetch_add(1,std::memory_order_release);
+    return true;
+}
+
+void mutationTask(void *argument){
+    auto *item=static_cast<Mutation *>(argument);
+    String error;bool ok=false;
+    const bool locked=!httpMutex || xSemaphoreTake(httpMutex,pdMS_TO_TICKS(60000))==pdTRUE;
+    if(!locked)error="Otra consulta sigue ocupando la red; repite el guardado";
+    else{
+        switch(item->kind){
+            case MutationKind::Wifi:ok=deviceSaveWifi(item->ssid,item->password,item->connectNow,error);break;
+            case MutationKind::RemoveWifi:ok=deviceRemoveWifi(item->ssid,error);break;
+            case MutationKind::Location:ok=deviceSaveLocation(item->location,error);break;
+            case MutationKind::LibreUser:ok=deviceSaveLibreUser(item->person,error);break;
+        }
+        if(httpMutex)xSemaphoreGive(httpMutex);
+    }
+    delete item;
+    strlcpy(mutationError,error.c_str(),sizeof(mutationError));
+    mutationState.store(ok?SetupJob::Ready:SetupJob::Failed,std::memory_order_release);
+    vTaskDelete(nullptr);
+}
+
+bool queueMutation(Mutation *item,String &error){
+    if(!item){error="Memoria insuficiente";return false;}
+    if(strcmp(settingsLoadState,"invalid")==0 || strcmp(settingsLoadState,"unavailable")==0){
+        delete item;error="Ajustes NVS dañados o inaccesibles; haz una copia antes de guardar";
+        return false;
+    }
+    if(mutationState.load(std::memory_order_acquire)==SetupJob::Running){
+        delete item;error="Espera a que termine el guardado";return false;
+    }
+    mutationError[0]=0;
+    mutationState.store(SetupJob::Running,std::memory_order_release);
+    if(xTaskCreatePinnedToCore(mutationTask,"settings-save",12288,item,0,nullptr,appWorkerCore())!=pdPASS){
+        delete item;mutationState.store(SetupJob::Failed);
+        error="No se pudo iniciar el guardado";return false;
+    }
+    return true;
+}
+
+bool deviceQueueWifi(const String &ssid,const String &password,bool connectNow,String &error){
+    auto *item=new(std::nothrow) Mutation{};if(!item){error="Memoria insuficiente";return false;}
+    item->kind=MutationKind::Wifi;item->ssid=ssid;item->password=password;item->connectNow=connectNow;
+    return queueMutation(item,error);
+}
+bool deviceQueueRemoveWifi(const String &ssid,String &error){
+    auto *item=new(std::nothrow) Mutation{};if(!item){error="Memoria insuficiente";return false;}
+    item->kind=MutationKind::RemoveWifi;item->ssid=ssid;return queueMutation(item,error);
+}
+bool deviceQueueLocation(const LocationChoice &choice,String &error){
+    auto *item=new(std::nothrow) Mutation{};if(!item){error="Memoria insuficiente";return false;}
+    item->kind=MutationKind::Location;item->location=choice;return queueMutation(item,error);
+}
+bool deviceQueueLibreUser(const ConnectionChoice &choice,String &error){
+    auto *item=new(std::nothrow) Mutation{};if(!item){error="Memoria insuficiente";return false;}
+    item->kind=MutationKind::LibreUser;item->person=choice;return queueMutation(item,error);
+}
+SetupJob deviceMutationResult(String &error){
+    const auto state=mutationState.load(std::memory_order_acquire);
+    if(state==SetupJob::Failed)error=mutationError;
+    return state;
+}
+
 void configLoad() {
     Preferences p; String raw;
     if (p.begin("glucowave", true)) { raw = p.getString("settings", ""); p.end(); }
@@ -678,9 +958,11 @@ bool configNeedsSetup() {
     return config.ssid.isEmpty() || config.libreUser.isEmpty() ||
            config.patientId.isEmpty();
 }
+const char *configStorageState(){return settingsLoadState;}
 
 void portalStart() {
     if (mode.load() != PortalMode::Off) return;
+    cancelWifiScan();
     char value[64];
     snprintf(value, sizeof(value), "GlucoWave-%04X", unsigned(ESP.getEfuseMac() & 0xffff)); apName = value;
     snprintf(value, sizeof(value), "GW%08lX", static_cast<unsigned long>(esp_random())); apPass = value;

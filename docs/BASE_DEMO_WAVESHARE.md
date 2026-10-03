@@ -36,7 +36,7 @@ panel.
 - `firmware/src/display.cpp`: adaptacion directa del arranque del demo.
 - `firmware/src/main.cpp`: orden de inicio y bucle LVGL.
 - `firmware/src/providers.cpp`: LibreLinkUp y Open-Meteo.
-- `firmware/src/ui.cpp`: reloj, lectura, flecha, colores y gráfica de 10 horas.
+- `firmware/src/ui.cpp`: reloj, lectura, flecha, colores y gráfica de hasta 12 horas.
 - `firmware/src/config.cpp`: NVS, los dos portales QR y la API local de ajustes.
 - `firmware/src/network.cpp`: tarea periodica de glucosa y clima.
 - `firmware/src/http.cpp`: cliente HTTPS comun para los proveedores externos.

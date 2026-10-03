@@ -45,7 +45,7 @@ uint32_t weather() {
     const auto r = net::request(url, d, "GET", "", {}, 32 * 1024);
     if (r.status != 200 || !d["current"]["temperature_2m"].is<double>()) {
         text(work->weatherError, r.error.isEmpty() ? "Respuesta meteorológica incompleta" : r.error.c_str());
-        return std::max<uint32_t>(120, r.retrySeconds);
+        return std::max<uint32_t>(300, r.retrySeconds);
     }
     work->temperature = d["current"]["temperature_2m"];
     work->apparent = d["current"]["apparent_temperature"] | work->temperature;
@@ -81,7 +81,7 @@ uint32_t weather() {
     work->weatherFetched = time(nullptr);
     work->weatherValid = true;
     work->weatherError[0] = 0;
-    return 120;
+    return 30 * 60;
 }
 
 void task(void *) {
@@ -95,6 +95,7 @@ void task(void *) {
     uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0;
     uint32_t connectedAt = 0, disconnectedAt = 0, lastRequest = 0, reconnectAt = 0, libreBlockedUntil = 0;
     bool scheduleReady = false, portalWasActive = false;
+    uint8_t glucoseShortRetries=0;
     String accountKey = net::sha256(config.libreUser + "\n" + config.librePass + "\n" + config.libreRegion + "\n" + config.libreVersion);
     String locationKey = net::sha256(config.city + "\n" + String(config.latitude, 5) + "\n" + String(config.longitude, 5));
     uint32_t knownRevision = configRevision.load(std::memory_order_acquire);
@@ -108,7 +109,10 @@ void task(void *) {
             if (configSelectPatient(selection.id, selection.name)) {
                 strlcpy(work->activePatientId, selection.id, sizeof(work->activePatientId));
                 if (changedPatient) {
+                    glucoseShortRetries=0;
                     work->pointCount = 0;
+                    work->currentValid = false;
+                    work->current = {};
                     work->direction[0] = 0;
                     work->glucoseFetched = 0;
                     // El histórico está solo en RAM; no escribir flash al
@@ -129,7 +133,7 @@ void task(void *) {
             }
         }
 
-        if (portalActive()) {
+        if (portalActive() || configUiActive.load(std::memory_order_acquire)) {
             portalWasActive = true;
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
@@ -145,9 +149,12 @@ void task(void *) {
           knownRevision = revision;
           const String currentAccountKey = net::sha256(config.libreUser + "\n" + config.librePass + "\n" + config.libreRegion + "\n" + config.libreVersion);
           if (currentAccountKey != accountKey) {
+            glucoseShortRetries=0;
             accountKey = currentAccountKey;
             strlcpy(work->activePatientId, config.patientId.c_str(), sizeof(work->activePatientId));
             work->pointCount = 0;
+            work->currentValid = false;
+            work->current = {};
             work->glucoseFetched = 0;
             work->glucoseRequestStartedMs = 0;
             work->direction[0] = 0;
@@ -250,16 +257,7 @@ void task(void *) {
         const uint32_t tick = millis();
         const bool gapReady = !lastRequest || tick - lastRequest >= kRequestGapMs;
         const bool libreReady = !libreBlockedUntil || due(tick, libreBlockedUntil);
-        if (gapReady && libreReady && due(tick, connectionsDue)) {
-            appDiagnosticStage("Preparando usuarios Libre");
-            Serial.println("[RED 1/1] Actualizando la lista de usuarios LibreLinkUp");
-            const uint32_t wait = libre.listConnections(*work);
-            publish();
-            appDiagnosticStage("Esperando siguiente consulta");
-            lastRequest = millis();
-            connectionsDue = lastRequest + std::max<uint32_t>(300, wait) * 1000;
-            if (work->connectionsError[0] && wait > 120) libreBlockedUntil = lastRequest + wait * 1000;
-        } else if (gapReady && libreReady && due(tick, glucoseDue)) {
+        if (gapReady && libreReady && due(tick, glucoseDue) && !config.patientId.isEmpty()) {
             appDiagnosticStage("Preparando gráfica Libre");
             Serial.println("[RED 1/1] Consultando glucosa LibreLinkUp");
             text(work->glucoseError, "Consultando gráfica LibreLinkUp...");
@@ -270,14 +268,31 @@ void task(void *) {
             publish();
             appDiagnosticStage("Esperando siguiente consulta");
             lastRequest = millis();
-            glucoseDue = lastRequest + std::max<uint32_t>(120, wait) * 1000;
-            if (work->glucoseError[0] && wait > 120) libreBlockedUntil = lastRequest + wait * 1000;
+            const bool transient=work->glucoseError[0] && wait<=120;
+            const uint32_t seconds=transient && glucoseShortRetries==0 ?
+                std::max<uint32_t>(45,wait) : std::max<uint32_t>(120,wait);
+            glucoseShortRetries=transient?std::min<uint8_t>(2,glucoseShortRetries+1):0;
+            glucoseDue = lastRequest + seconds * 1000;
+            if(work->glucoseError[0] && wait>120)libreBlockedUntil=lastRequest+wait*1000;
+            else if(!work->glucoseError[0])libreBlockedUntil=0;
+        } else if (gapReady && libreReady && due(tick, connectionsDue)) {
+            appDiagnosticStage("Preparando usuarios Libre");
+            Serial.println("[RED 1/1] Actualizando la lista de usuarios LibreLinkUp");
+            const uint32_t wait = libre.listConnections(*work);
+            publish();
+            appDiagnosticStage("Esperando siguiente consulta");
+            lastRequest = millis();
+            connectionsDue = lastRequest + std::max<uint32_t>(300, wait) * 1000;
+            // Solo el rechazo explícito del proveedor limita también glucosa.
+            // Un fallo de la lista de usuarios no detiene el paciente ya elegido.
+            if(work->connectionsError[0] && wait>=900)
+                libreBlockedUntil=lastRequest+wait*1000;
         } else if (gapReady && due(tick, weatherDue)) {
             Serial.println("[RED 1/1] Consultando clima Open-Meteo");
             const uint32_t wait = weather();
             publish();
             lastRequest = millis();
-            weatherDue = lastRequest + std::max<uint32_t>(120, wait) * 1000;
+            weatherDue = lastRequest + std::max<uint32_t>(300, wait) * 1000;
         }
         vTaskDelay(pdMS_TO_TICKS(250));
     }

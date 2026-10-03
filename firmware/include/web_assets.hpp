@@ -203,8 +203,9 @@ $("loginLibre").addEventListener("click",async()=>{
   try{
     await api("/api/libre/login",credentials());
     let r=null;
-    for(let elapsed=1;elapsed<=90;elapsed++){
-      await wait(1000);r=await api("/api/libre/status");
+    // El portal comparte la radio con TLS: bastan consultas de estado espaciadas.
+    for(let elapsed=3;elapsed<=90;elapsed+=3){
+      await wait(3000);r=await api("/api/libre/status");
       if(r.state!=="running")break;
       $("libreMessage").textContent=`Conectando con LibreLinkUp... ${elapsed} s`;
     }
@@ -272,7 +273,8 @@ async function start(){
     cfg=await api("/api/config");$("version").textContent=`Versión ${cfg.version}`;
     if(cfg.last_reset_reason?.includes("WDT")||cfg.last_reset_reason==="Excepción"){
       const stage=cfg.last_fault_stage?` · fase: ${cfg.last_fault_stage}`:"";
-      message(`Último reinicio: ${cfg.last_reset_reason}${stage}`,true);
+      const uptime=Number.isFinite(cfg.uptime_seconds)?` · encendido hace ${Math.floor(cfg.uptime_seconds/60)} min`:"";
+      message(`Último reinicio: ${cfg.last_reset_reason}${stage}${uptime}`,true);
     }
     if(cfg.settings_state==="invalid")message("Hay ajustes en NVS, pero no se pudieron leer. Conserva una copia de NVS antes de volver a guardar.",true);
     else if(cfg.settings_state==="unavailable")message("No se pudo abrir la memoria de ajustes NVS. Evita guardar de nuevo hasta comprobar la placa.",true);

@@ -1,5 +1,40 @@
 # Cambios
 
+## 1.0
+
+- La búsqueda de ubicación conserva solo seis campos por resultado y reduce de 28 a 12 KiB el JSON reservado. Tras completar o fallar el HTTPS, resincroniza una sola vez el panel RGB desde el bucle de interfaz, incluso si se abandona el menú, para recuperar un barrido desajustado sin reiniciar el equipo. Pendiente de comprobar en la placa.
+- Las teclas «Más» y «Volver» cambian el mapa al soltar el dedo. Antes el cambio se hacía al presionar y la tecla «abc» de la nueva página, situada en el mismo lugar, devolvía el teclado a letras al terminar el toque.
+- Usa selectores de estilo `lv_style_selector_t` para los estados del cursor y las teclas pulsadas; elimina las cinco advertencias de enumeraciones distintas en Arduino-ESP32 3.3.12 sin cambiar su apariencia.
+- Mueve «Gestionar usuarios» de la pantalla de glucosa a Ajustes; «Volver» regresa al menú y elegir una persona regresa a glucosa y mantiene el guardado en NVS.
+- Añade una segunda página de símbolos del teclado con asterisco, barra invertida y otros signos frecuentes; «Más» y «Volver» solo cambian de página y no se insertan en el texto.
+- Limita a 100 ms (10 Hz) el período de repintado de LVGL para reducir la carga de interfaz observada como destellos durante Wi-Fi/HTTPS. Conserva el reloj RGB de 12 MHz: corresponde al barrido continuo del panel y bajarlo a 10 Hz produciría parpadeo visible. Pendiente de validación en la placa.
+- Reordena el teclado QWERTY español: ñ en la fila de letras, vocales con tilde y signos en **1#**. Da foco explícito al campo activo y muestra un cursor azul fijo, sin animación adicional.
+- Amplía el búfer de rebote RGB de diez a veinte líneas para tolerar mejor las recargas de PSRAM bajo HTTPS. Libera uno de los dos buffers LVGL de dieciocho líneas; el `drawBitmap` RGB es síncrono, de modo que el segundo no es necesario. Balance aproximado: 3,2 KiB más de RAM interna. Mantiene 12 MHz de PCLK y la tarea HTTPS en CPU1/prioridad 0. Pendiente de prueba en la pantalla real.
+
+- Corrige la alineación del teclado táctil de LVGL para que sus cuatro filas queden dentro de la LCD. Añade distribución española con ñ, tildes, símbolos y botón para mostrarlo u ocultarlo.
+- Usa la fuente de símbolos LVGL para la flecha del selector de región, y mantiene la fuente castellana para sus opciones.
+- El menú principal de Ajustes tiene una sola salida a Glucosa mediante una X.
+- Acota los datos JSON retenidos durante el inicio de sesión y la lista de usuarios, separa medio segundo ambas peticiones y reduce las consultas de estado del portal a una cada tres segundos.
+- Limpia la fase de diagnóstico al terminar el trabajo HTTPS para evitar atribuir un reinicio posterior al login. Distingue login, usuarios y análisis JSON; la fase por sí sola no identifica la tarea que disparó el WDT. Pendiente de validación en la placa.
+- Ante el WDT reproducible unos tres segundos después del login del portal, mueve sus dos puntos de entrada (QR y pantalla táctil) de CPU0 a CPU1, prioridad 0, igual que la tarea periódica estable. Hace lo mismo para las dos entradas de geocodificación. La tarea periódica queda pausada durante ajustes y el bucle de LVGL mantiene mayor prioridad. No altera la configuración del watchdog.
+
+- Ajustes táctiles como vía principal: teclado, búsqueda y gestión de redes Wi-Fi cercanas o guardadas, SSID manual, búsqueda de localidad y acceso LibreLinkUp con selección de usuario. Portal QR opcional y cerrado cuando no se muestra.
+- Guardados de ajustes en una tarea separada de baja prioridad, serializados con HTTPS para proteger el bucle de LVGL y la pantalla RGB; mismo formato NVS y tabla de particiones.
+- Datos de glucosa cada dos minutos con un único reintento espaciado tras fallos transitorios. Lista de usuarios sin bloquear lecturas actuales ante errores ordinarios; clima cada 30 minutos. Histórico válido conservado si llega solo el punto actual.
+- Pantalla principal con estado simple de lectura y hora de la última muestra válida. Los fallos técnicos siguen disponibles en el portal y el registro serie.
+
+## 0.8.9
+
+- Corrige la compilación de `providers.cpp`: el filtro JSON para `glucoseMeasurement` y el punto de glucosa actual tenían el mismo nombre `current` en `LibreClient::read`.
+- Mantiene el comportamiento de la versión 0.8.8, incluidas las tareas, particiones y claves NVS; no requiere borrado para actualizar.
+
+## 0.8.8
+
+- Sustituye en RAM el histórico de cada respuesta válida de LibreLinkUp: hasta 12 horas y 160 muestras, sin acumulación de valores actuales antiguos. La lectura actual y su flecha se guardan separadas.
+- Dibuja una curva visual monótona entre medidas disponibles, sin extremos inventados; une por trazos punteados la última muestra histórica con el punto actual si la separación no supera 30 minutos. Los huecos largos quedan abiertos.
+- El eje X se desplaza con el tiempo y etiqueta horas reales en punto cada tres horas. La selección táctil sigue mostrando hora y valor originales.
+- Mantiene peticiones cada dos minutos en CPU1/prioridad 0, la separación HTTPS, el formato NVS y las protecciones RGB. Revisión estática sin compilación ni prueba en placa.
+
 ## 0.8.7
 
 - Retira escaneos periódicos y cambios de red con la pantalla en funcionamiento para reducir la contención de radio/PSRAM observada como destellos. Las redes adicionales se prueban únicamente tras desconexión y con 30 segundos entre intentos.

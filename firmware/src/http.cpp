@@ -143,6 +143,8 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     }
     if(buffer.used){
         if(url.indexOf("/graph")>=0)appDiagnosticStage("Libre: analizando JSON");
+        else if(url.endsWith("/llu/auth/login"))appDiagnosticStage("Libre: login JSON");
+        else if(url.endsWith("/llu/connections"))appDiagnosticStage("Libre: usuarios JSON");
         DeserializationError e = filter.isNull()
             ? deserializeJson(doc,buffer.data,buffer.used)
             : deserializeJson(doc,buffer.data,buffer.used,DeserializationOption::Filter(filter));

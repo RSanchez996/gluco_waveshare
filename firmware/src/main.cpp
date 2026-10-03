@@ -31,6 +31,9 @@ String faultStages[3];
 bool persistDiagnosticStage(const char *stage){
     return strcmp(stage,"Iniciando Wi-Fi")==0 ||
            strcmp(stage,"Libre: login HTTPS")==0 ||
+           strcmp(stage,"Libre: login JSON")==0 ||
+           strcmp(stage,"Libre: usuarios HTTPS")==0 ||
+           strcmp(stage,"Libre: usuarios JSON")==0 ||
            strcmp(stage,"Libre: gráfica HTTPS")==0 ||
            strcmp(stage,"Libre: procesando datos")==0 ||
            strcmp(stage,"Libre: analizando JSON")==0 ||
@@ -62,7 +65,14 @@ const char *appPreviousFaultStage(unsigned index){return index<3?faultStages[ind
 void appDiagnosticStage(const char *stage){
     if(!stage||!stage[0])return;
     // La fase NOINIT se escribe en RAM sin interrumpir el barrido RGB.
-    if(!persistDiagnosticStage(stage))return;
+    if(!persistDiagnosticStage(stage)){
+        // La marca describe una operación en curso, no la última operación
+        // que se completó. Evita atribuir un WDT posterior al login.
+        if(storageMutex)xSemaphoreTake(storageMutex,portMAX_DELAY);
+        lastFaultMarker.magic=0;
+        if(storageMutex)xSemaphoreGive(storageMutex);
+        return;
+    }
     if(storageMutex)xSemaphoreTake(storageMutex,portMAX_DELAY);
     if(validFaultMarker()&&strcmp(lastFaultMarker.stage,stage)==0){
         if(storageMutex)xSemaphoreGive(storageMutex);
@@ -96,7 +106,7 @@ void safeMode(){lv_obj_clean(lv_scr_act());lv_obj_set_style_bg_color(lv_scr_act(
 void setup(){
     arduinoCore=xPortGetCoreID();
     Serial.begin(115200);delay(800);lastResetReason=esp_reset_reason();if(bootMagic!=0x47574C43){bootMagic=0x47574C43;rapidBoots=0;bootCount=0;}++rapidBoots;++bootCount;Serial.printf("\n[BOOT 1/6] Gluco Waveshare %s | intento rápido %u\n",APP_VERSION,rapidBoots);Serial.printf("Chip %s | flash %u MB | PSRAM %u MB | reset %d (%s) | arranque %u\n",ESP.getChipModel(),ESP.getFlashChipSize()/1048576U,ESP.getPsramSize()/1048576U,int(lastResetReason),appResetReason(),bootCount);
-    Serial.printf("[CPU] Interfaz %d | datos periódicos 1 | portal HTTPS %d (prioridad 0)\n",arduinoCore,appWorkerCore());
+    Serial.printf("[CPU] Interfaz %d | HTTPS 1 (prioridad 0) | guardado %d\n",arduinoCore,appWorkerCore());
     if(!psramFound()||ESP.getPsramSize()<7*1024*1024)halt("No se detectan los 8 MB de PSRAM OPI");
     recordFaultBoot();
     storageMutex=xSemaphoreCreateMutex();stateMutex=xSemaphoreCreateMutex();httpMutex=xSemaphoreCreateMutex();patientQueue=xQueueCreate(1,sizeof(PatientSelection));sharedState=static_cast<AppState *>(heap_caps_calloc(1,sizeof(AppState),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));if(!storageMutex||!stateMutex||!httpMutex||!patientQueue||!sharedState)halt("No se pudo reservar memoria de estado");
@@ -108,7 +118,7 @@ void setup(){
     WiFi.persistent(false);WiFi.setSleep(false);WiFi.setAutoReconnect(true);WiFi.mode(WIFI_STA);
     configTzTime(config.timezone=="Atlantic/Canary"?"WET0WEST,M3.5.0/1,M10.5.0":config.timezone=="UTC"?"UTC0":"CET-1CEST,M3.5.0,M10.5.0/3","pool.ntp.org","time.cloudflare.com");
     if(!config.ssid.isEmpty()){appDiagnosticStage("Iniciando Wi-Fi");WiFi.begin(config.ssid.c_str(),config.wifiPass.c_str());}
-    if(configNeedsSetup()){appDiagnosticStage("Abriendo configuracion");portalStart();uiShowSetup();}appDiagnosticStage("Iniciando tareas");networkStart();Serial.println("[BOOT 6/6] Aplicacion preparada");
+    if(configNeedsSetup()){appDiagnosticStage("Abriendo configuracion");uiShowSetup();}appDiagnosticStage("Iniciando tareas");networkStart();Serial.println("[BOOT 6/6] Aplicacion preparada");
 }
 void loop(){portalLoop();static uint32_t last=0;if(millis()-last>=500){uiTick();last=millis();}if(rapidBoots&&millis()>60000){rapidBoots=0;Serial.println("[BOOT] Estable durante 60 s; contador de reinicios borrado");}if(faultBoots&&millis()>300000){Preferences p;if(p.begin("glucodiag",false)){p.putUChar("faults",0);p.end();faultBoots=0;}}lv_timer_handler();delay(5);}
 void markPlannedRestart(){rapidBoots=0;}

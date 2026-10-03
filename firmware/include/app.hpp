@@ -7,11 +7,14 @@
 #include <atomic>
 #include "core.hpp"
 
-constexpr const char *APP_VERSION = "0.8.7";
+constexpr const char *APP_VERSION = "1.0";
 constexpr size_t MAX_CONNECTIONS = 12;
 constexpr size_t MAX_EXTRA_WIFI = 4;
 enum class PortalMode : uint8_t { Off, WifiAccessPoint, WaitingForWifi, LocalNetwork };
 struct WifiEntry { String ssid, password; };
+struct WifiScanEntry { char ssid[33]{}; int rssi=-100; bool secure=true; };
+struct LocationChoice { char name[140]{}; float latitude=0, longitude=0; char timezone[32]{}; };
+enum class SetupJob : uint8_t { Idle, Running, Ready, Failed };
 struct Config {
     String ssid, wifiPass;
     WifiEntry extraWifi[MAX_EXTRA_WIFI];
@@ -28,6 +31,8 @@ struct WeatherDay { int64_t epoch = 0; float high = 0, low = 0; int rain = 0; in
 struct AppState {
     gluco::Point points[gluco::kMaxPoints]{};
     size_t pointCount = 0;
+    gluco::Point current{};
+    bool currentValid = false;
     char direction[24]{};
     char glucoseError[160]{};
     int64_t glucoseFetched = 0;
@@ -55,10 +60,12 @@ extern SemaphoreHandle_t stateMutex;
 extern SemaphoreHandle_t storageMutex;
 extern SemaphoreHandle_t httpMutex;
 extern QueueHandle_t patientQueue;
+extern std::atomic<bool> configUiActive;
 void configLoad();
 bool configSelectPatient(const char *id, const char *name);
 bool requestPatientSelection(const char *id, const char *name);
 bool configNeedsSetup();
+const char *configStorageState();
 void portalStart();
 void portalLoop();
 void portalStop();
@@ -67,11 +74,28 @@ PortalMode portalMode();
 String portalSsid();
 String portalPassword();
 String portalUrl();
+bool deviceWifiScan(String &error);
+SetupJob deviceWifiResults(WifiScanEntry *out, size_t capacity, size_t &count, String &error);
+bool deviceSaveWifi(const String &ssid, const String &password, bool connectNow, String &error);
+bool deviceRemoveWifi(const String &ssid, String &error);
+bool deviceGeocode(const String &query, String &error);
+SetupJob deviceGeocodeResults(LocationChoice *out, size_t capacity, size_t &count, String &error);
+bool deviceSaveLocation(const LocationChoice &choice, String &error);
+bool deviceLibreLogin(const String &user, const String &password, const String &region, String &error);
+SetupJob deviceLibreResults(ConnectionChoice *out, size_t capacity, size_t &count, String &error);
+bool deviceSaveLibreUser(const ConnectionChoice &choice, String &error);
+bool deviceQueueWifi(const String &ssid,const String &password,bool connectNow,String &error);
+bool deviceQueueRemoveWifi(const String &ssid,String &error);
+bool deviceQueueLocation(const LocationChoice &choice,String &error);
+bool deviceQueueLibreUser(const ConnectionChoice &choice,String &error);
+SetupJob deviceMutationResult(String &error);
 void displayInit();
 void displayWake();
 void displaySleep();
 bool displayIsSleeping();
 void displayResync();
+void displayRequestResync();
+void displayServiceResync();
 void uiInit();
 void uiTick();
 void uiShowSetup();

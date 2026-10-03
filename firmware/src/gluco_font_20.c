@@ -1259,7 +1259,8 @@ lv_font_t gluco_font_20 = {
 #endif
     .dsc = &font_dsc,          /*The custom font data. Will be accessed by `get_glyph_bitmap/dsc` */
 #if LV_VERSION_CHECK(8, 2, 0) || LVGL_VERSION_MAJOR >= 9
-    .fallback = NULL,
+    /* LVGL keyboard control symbols are outside the Spanish text glyph set. */
+    .fallback = &lv_font_montserrat_14,
 #endif
     .user_data = NULL,
 };
@@ -1267,4 +1268,3 @@ lv_font_t gluco_font_20 = {
 
 
 #endif /*#if GLUCO_FONT_20*/
-

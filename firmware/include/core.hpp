@@ -4,12 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 namespace gluco {
-constexpr int64_t kHistorySeconds = 10 * 60 * 60;
+constexpr int64_t kHistorySeconds = 12 * 60 * 60;
 constexpr int64_t kSampleSeconds = 5 * 60;
-constexpr int64_t kStaleSeconds = 10 * 60;
+constexpr int64_t kStaleSeconds = 5 * 60;
 constexpr int64_t kMaxGapSeconds = 12 * 60;
 constexpr int64_t kGraphGapSeconds = 30 * 60;
-constexpr size_t kMaxPoints = 120;
+constexpr size_t kMaxPoints = 160;
 enum class Range : uint8_t { Invalid, LowRed, Green, HighYellow, VeryHighOrange };
 inline Range range(double value) {
     if (!std::isfinite(value) || value < 20 || value > 1000) return Range::Invalid;

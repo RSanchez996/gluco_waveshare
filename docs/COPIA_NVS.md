@@ -2,33 +2,32 @@
 
 El Wi-Fi, LibreLinkUp, el usuario y la ubicación se guardan en la partición
 `nvs` del archivo `firmware/partitions.csv`, en el rango `0x9000`–`0x68FFF`
-(`0x60000` bytes). La tabla es idéntica desde la versión 0.8.0 hasta la 0.8.7.
+(`0x60000` bytes).
 
 Una carga normal con `pio run -t upload` no incluye `erase`. No hay suficiente
 información de la placa afectada para saber por qué se perdieron los ajustes;
 si se ejecuta `pio run -t erase`, estos sí se borran. Una copia externa permite
 recuperarlos aunque haya que borrar la flash por otro motivo.
 
-Desde la 0.8.4, `./actualizar.sh /dev/ttyACM0` crea automáticamente una copia
+`./actualizar.sh /dev/ttyACM0` crea automáticamente una copia
 privada en `nvs_backups/` y **no inicia la carga** si no puede leerla. No
 reconstruye los datos que ya se hubieran perdido antes de crear esa copia.
 
 ## Ubuntu 24.04
 
 Conecta el USB marcado `UART`, cierra cualquier programa que esté usando el
-puerto y localiza el dispositivo con `pio device list`. Si no tienes `esptool`,
-puedes instalarlo en un entorno separado:
+puerto y localiza el dispositivo con `firmware/.build-venv/bin/pio device list`.
+`./compilar.sh` instala `esptool` en ese mismo entorno virtual.
 
 ```bash
-python3 -m venv .backup-venv
-./.backup-venv/bin/python -m pip install esptool
+./compilar.sh
 ```
 
 Desde la raíz del proyecto, con esptool 5, haz una copia **antes** de actualizar:
 
 ```bash
 umask 077
-./.backup-venv/bin/python -m esptool --chip esp32s3 --port /dev/ttyACM0 \
+./firmware/.build-venv/bin/python -m esptool --chip esp32s3 --port /dev/ttyACM0 \
   read-flash 0x9000 0x60000 nvs_backup_antes_de_actualizar.bin
 stat -c '%s bytes' nvs_backup_antes_de_actualizar.bin
 ./actualizar.sh /dev/ttyACM0
@@ -44,7 +43,7 @@ no la subas a GitHub ni la compartas para depuración.
 
 Si ya se borró la partición y no existe una copia anterior, el firmware no
 puede reconstruir las credenciales. En ese caso vuelve a configurar la red y
-la cuenta con los dos QR. Una copia de NVS se debe restaurar solo en la misma
+la cuenta desde la pantalla o con los dos QR. Una copia de NVS se debe restaurar solo en la misma
 placa y con una tabla de particiones compatible.
 
 Si tras una actualización el portal indica que NVS no contiene ajustes, y
@@ -53,7 +52,7 @@ cerrando el portal y restaura únicamente esa partición (esptool 5):
 
 ```bash
 stat -c '%s bytes' nvs_backups/nvs_FECHA.bin
-./.backup-venv/bin/python -m esptool --chip esp32s3 --port /dev/ttyACM0 \
+./firmware/.build-venv/bin/python -m esptool --chip esp32s3 --port /dev/ttyACM0 \
   write-flash 0x9000 nvs_backups/nvs_FECHA.bin
 ```
 

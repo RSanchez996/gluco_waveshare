@@ -35,7 +35,7 @@ cd ..
 ./actualizar.sh /dev/ttyACM0
 ```
 
-El script copia NVS en `nvs_backups/` antes de grabar y cancela el `upload` si no puede hacer la copia. **No uses `erase` para actualizar:** destruye el Wi-Fi, las credenciales y cualquier otra información guardada. Esta versión conserva las particiones de 0.8.0. Solo si decides hacer una instalación completamente limpia desde una tabla incompatible y aceptas perder los datos se ejecuta el borrado total, antes del `upload`:
+El script copia NVS en `nvs_backups/` antes de grabar y cancela el `upload` si no puede hacer la copia. **No uses `erase` para actualizar:** destruye el Wi-Fi, las credenciales y cualquier otra información guardada. Solo si decides hacer una instalación completamente limpia desde una tabla incompatible y aceptas perder los datos se ejecuta el borrado total, antes del `upload`:
 
 ```bash
 ./.build-venv/bin/pio run -t erase --upload-port /dev/ttyACM0
@@ -72,14 +72,15 @@ py -m platformio run -d firmware -t erase --upload-port COM7
 
 Para futuras actualizaciones utiliza solo `upload`. No mezcles en un mismo proyecto instalaciones diferentes de PlatformIO cuando aparezca un aviso de `Obsolete PIO Core`.
 
-## Configuración mediante el móvil
+## Configuración desde la pantalla o el móvil
 
-1. Primer QR: conecta el teléfono a la red temporal `GlucoWave-XXXX` que se muestra en pantalla. Abre `http://192.168.4.1` si el portal no se abre automáticamente. Escribe el SSID y la clave del Wi-Fi doméstico de **2,4 GHz** y pulsa **Guardar Wi-Fi y continuar**.
-2. Espera a que la pantalla se conecte; vuelve a conectar el móvil al **mismo Wi-Fi doméstico**. Escanea el segundo QR con la dirección local mostrada. No hace falta HTTPS entre el teléfono y el dispositivo: el portal local usa HTTP; el ESP32 usa HTTPS hacia los proveedores.
-3. Inicia sesión con la **cuenta receptora LibreLinkUp** (la que ve lecturas compartidas), selecciona la persona y, si quieres el clima, busca una localidad. El uso del portal de informes LibreView por sí solo no proporciona los datos de esta integración.
-4. Pulsa **Guardar permanentemente y cerrar**. El portal se detiene; la configuración queda en NVS incluso tras apagar el dispositivo.
+1. En la pantalla, abre **Ajustes → Redes Wi-Fi**, elige una red de **2,4 GHz**, introduce su contraseña y pulsa **Guardar y conectar**. Si la red no aparece, usa **Escribir SSID**.
+2. Cuando el Wi-Fi esté conectado, abre **Cuenta LibreLinkUp**, inicia sesión con la **cuenta receptora** (la que ve lecturas compartidas) y selecciona una persona. El portal de informes LibreView por sí solo no proporciona los datos de esta integración.
+3. Opcionalmente, abre **Ubicación y clima**, busca una localidad y selecciona el resultado adecuado. Pulsa **Glucosa** para salir.
 
-Después puedes cambiar de persona desde el botón **Usuario** de glucosa. Para cambiar Wi-Fi, ubicación o credenciales, toca el engranaje y vuelve a abrir el segundo QR. No es necesario borrar la flash para reconfigurarla.
+La opción **Configurar con QR** permite hacerlo desde un móvil. Si aún no hay Wi-Fi, el primer QR conecta a la red temporal `GlucoWave-XXXX` y el portal está en `http://192.168.4.1`. Tras guardar el Wi-Fi y conectar el móvil a la misma red doméstica, el segundo QR abre el portal local. En el móvil pulsa **Guardar permanentemente y cerrar** cuando hayas terminado; el portal se detiene y la configuración queda en NVS incluso tras apagar el dispositivo. El portal usa HTTP local y el ESP32 usa HTTPS hacia los proveedores. Solo hay servidor web mientras se muestra el QR.
+
+Después puedes cambiar de persona desde el botón **Usuario** de glucosa. El engranaje permite gestionar Wi-Fi, ubicación o credenciales desde el táctil; el QR queda como alternativa. No es necesario borrar la flash para reconfigurarla.
 
 ## Comprobaciones y errores frecuentes
 

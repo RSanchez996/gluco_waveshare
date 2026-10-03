@@ -34,12 +34,21 @@ bool loginCredentials(const LibreCredentials &c,Session &s,String &error,uint32_
     String visited;
     for(int attempt=0;attempt<4;++attempt){
         if(visited.indexOf("|"+s.region+"|")>=0){error="Bucle de región LibreLinkUp";return false;}visited+="|"+s.region+"|";
-        Doc body(1800),response(52*1024);body["email"]=c.user;body["password"]=c.password;String json;serializeJson(body,json);
+        // El login puede devolver perfiles y metadatos grandes. Conservar solo
+        // los campos necesarios reduce la presión de PSRAM durante TLS.
+        Doc filter(1024);
+        filter["status"]=true;filter["message"]=true;
+        JsonObject data=filter.createNestedObject("data");
+        data["redirect"]=true;data["region"]=true;
+        data.createNestedObject("authTicket")["token"]=true;
+        data.createNestedObject("user")["id"]=true;
+        Doc body(1800),response(8*1024);body["email"]=c.user;body["password"]=c.password;String json;serializeJson(body,json);
         Serial.printf("[LIBRE] Login: región %s (sin mostrar credenciales)\n",s.region.c_str());
         appDiagnosticStage("Libre: login HTTPS");
         auto r=net::request(base(s.region)+"/llu/auth/login",response,"POST",json,
             {{"product","llu.android"},{"version",c.version},{"User-Agent","okhttp/4.10.0"},
-             {"Accept-Language","es-ES,es;q=0.9"},{"Cache-Control","no-cache"},{"Pragma","no-cache"}},64*1024);retry=r.retrySeconds;
+             {"Accept-Language","es-ES,es;q=0.9"},{"Cache-Control","no-cache"},{"Pragma","no-cache"}},
+            64*1024,filter.as<JsonVariantConst>());retry=r.retrySeconds;
         if(r.status!=200){
             // Un 403 puede proceder del filtro anti-bots. No probamos otra
             // región a ciegas: duplicaría los intentos y podría activar 430.
@@ -82,34 +91,33 @@ uint64_t connectionSignature(const ConnectionChoice *items,size_t count){
     }
     return hash;
 }
-void add(AppState &state,int glucose,int64_t epoch,const char *direction){
-    if(!gluco::validEpoch(epoch,time(nullptr))||gluco::range(glucose)==gluco::Range::Invalid)return;
-    int64_t newest=0;for(size_t i=0;i<state.pointCount;++i)newest=std::max(newest,state.points[i].epoch);
-    for(size_t i=0;i<state.pointCount;++i)if(state.points[i].epoch/gluco::kSampleSeconds==epoch/gluco::kSampleSeconds){
-        if(epoch>=state.points[i].epoch)state.points[i]={epoch,int16_t(glucose)};
-        if(epoch>=newest)text(state.direction,direction);return;
-    }
-    if(state.pointCount<gluco::kMaxPoints)state.points[state.pointCount++]={epoch,int16_t(glucose)};
-    else{size_t oldest=0;for(size_t i=1;i<state.pointCount;++i)if(state.points[i].epoch<state.points[oldest].epoch)oldest=i;state.points[oldest]={epoch,int16_t(glucose)};}
-    if(epoch>=newest)text(state.direction,direction);
-}
-bool addLibre(AppState &state,JsonObjectConst p){
+bool parseLibrePoint(JsonObjectConst p,int64_t now,gluco::Point &out){
     const bool has=p["ValueInMgPerDl"].is<double>();const int g=gluco::libreMgdl(p["ValueInMgPerDl"]|NAN,has,p["Value"]|NAN,p["GlucoseUnits"]|0);
     const int64_t epoch=gluco::factoryEpoch(p["FactoryTimestamp"]|"");
-    if(!gluco::validEpoch(epoch,time(nullptr))||gluco::range(g)==gluco::Range::Invalid)return false;
-    add(state,g,epoch,gluco::libreTrend(p["TrendArrow"]|0));return true;
+    if(!gluco::validEpoch(epoch,now)||gluco::range(g)==gluco::Range::Invalid)return false;
+    out={epoch,int16_t(g)};return true;
 }
 }
 bool libreListConnections(const LibreCredentials &credentials,ConnectionChoice *out,size_t capacity,size_t &count,String &resolvedRegion,String &error){
     count=0;uint32_t retry=60;Session s;bool reused=takeStagedSession(credentials,s);
     if(!reused&&!loginCredentials(credentials,s,error,retry))return false;
+    // Dos negociaciones TLS seguidas compiten por memoria y radio con el panel
+    // RGB. Separarlas un instante deja ejecutar las tareas Idle y Wi-Fi.
+    if(!reused)vTaskDelay(pdMS_TO_TICKS(500));
     Serial.println("[LIBRE] Consultando usuarios compartidos");
-    Doc d(28*1024);auto r=sessionGet(s,credentials,"/llu/connections",d,64*1024);
+    Doc filter(1024);filter["status"]=true;filter["message"]=true;
+    JsonArray list=filter.createNestedArray("data");JsonObject item=list.createNestedObject();
+    item["patientId"]=true;item["firstName"]=true;item["lastName"]=true;
+    Doc d(16*1024);
+    appDiagnosticStage("Libre: usuarios HTTPS");
+    auto r=sessionGet(s,credentials,"/llu/connections",d,64*1024,filter.as<JsonVariantConst>());
     if(reused&&(r.status==401||(r.status==200&&(d["status"]|-1)==2))){
         Serial.println("[LIBRE] La sesión en RAM ha caducado; renovando una vez");
         clearStagedSession();d.clear();
         if(!loginCredentials(credentials,s,error,retry))return false;
-        r=sessionGet(s,credentials,"/llu/connections",d,64*1024);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        appDiagnosticStage("Libre: usuarios HTTPS");
+        r=sessionGet(s,credentials,"/llu/connections",d,64*1024,filter.as<JsonVariantConst>());
     }
     if(r.status!=200){error="Usuarios LibreLinkUp ("+s.region+"): "+r.error;return false;}
     const int status=d["status"]|-1;
@@ -153,21 +161,49 @@ uint32_t LibreClient::read(AppState &state){
     Doc filter(1400);filter["status"]=true;filter["message"]=true;JsonObject data=filter.createNestedObject("data");
     JsonArray graph=data.createNestedArray("graphData");JsonObject point=graph.createNestedObject();
     for(const char *key:{"FactoryTimestamp","ValueInMgPerDl","Value","GlucoseUnits","TrendArrow"})point[key]=true;
-    JsonObject connection=data.createNestedObject("connection");JsonObject current=connection.createNestedObject("glucoseMeasurement");
-    for(const char *key:{"FactoryTimestamp","ValueInMgPerDl","Value","GlucoseUnits","TrendArrow"})current[key]=true;
+    JsonObject connection=data.createNestedObject("connection");JsonObject measurementFilter=connection.createNestedObject("glucoseMeasurement");
+    for(const char *key:{"FactoryTimestamp","ValueInMgPerDl","Value","GlucoseUnits","TrendArrow"})measurementFilter[key]=true;
     Doc d(72*1024);auto r=get("/llu/connections/"+net::encode(config.patientId)+"/graph",d,512*1024,filter.as<JsonVariantConst>());
     appDiagnosticStage("Libre: procesando datos");
     if(r.status!=200||!d["data"]["graphData"].is<JsonArray>()){text(state.glucoseError,r.error.isEmpty()?"Histórico LibreLinkUp no reconocido":r.error.c_str());return r.retrySeconds;}
-    size_t accepted=0;const size_t received=d["data"]["graphData"].size();
-    for(JsonObjectConst p:d["data"]["graphData"].as<JsonArrayConst>())if(addLibre(state,p))++accepted;
-    if(addLibre(state,d["data"]["connection"]["glucoseMeasurement"].as<JsonObjectConst>()))++accepted;
-    Serial.printf("[LIBRE] Gráfica recibida: %u registros, %u válidos dentro de 10 h\n",unsigned(received),unsigned(accepted));
-    if(!accepted){text(state.glucoseError,"LibreLinkUp respondió, pero las fechas o lecturas no son válidas");return 300;}
-    state.pointCount=gluco::normalize(state.points,state.pointCount,time(nullptr));
-    if(!state.pointCount){text(state.glucoseError,"Sin lecturas válidas; revisa LibreLinkUp");return 300;}
-    // El histórico se acumula en RAM hasta 10 h; el proveedor puede entregar
-    // menos registros por consulta y las horas anteriores aparecen con el uso.
-    // Evitar escrituras NVS periódicas mientras la LCD RGB lee PSRAM.
+    // /graph ya incluye el histórico. Reemplazarlo entero en cada consulta:
+    // los puntos almacenados antes pueden haber sido corregidos por el servicio.
+    const int64_t now=time(nullptr);
+    // Reservar fuera de la pila de la tarea HTTPS: 160 puntos son 2,5 KiB.
+    auto *fresh=static_cast<gluco::Point *>(heap_caps_malloc(
+        gluco::kMaxPoints*sizeof(gluco::Point),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if(!fresh){text(state.glucoseError,"Memoria insuficiente para la gráfica");return 300;}
+    size_t count=0;const size_t received=d["data"]["graphData"].size();
+    for(JsonObjectConst p:d["data"]["graphData"].as<JsonArrayConst>()){
+        gluco::Point point{};
+        if(!parseLibrePoint(p,now,point))continue;
+        if(count<gluco::kMaxPoints)fresh[count++]=point;
+        else{
+            // Si llegan más de 160 muestras, conservar las más recientes.
+            size_t oldest=0;
+            for(size_t i=1;i<count;++i)if(fresh[i].epoch<fresh[oldest].epoch)oldest=i;
+            if(point.epoch>fresh[oldest].epoch)fresh[oldest]=point;
+        }
+    }
+    count=gluco::normalize(fresh,count,now);
+    gluco::Point current{};
+    const auto reading=d["data"]["connection"]["glucoseMeasurement"].as<JsonObjectConst>();
+    const bool currentValid=parseLibrePoint(reading,now,current);
+    Serial.printf("[LIBRE] Histórico: %u recibidos, %u válidos / 12 h; actual: %s\n",
+                  unsigned(received),unsigned(count),currentValid?"sí":"no");
+    if(!count&&!currentValid){
+        heap_caps_free(fresh);
+        text(state.glucoseError,"LibreLinkUp respondió sin lecturas válidas");return 300;
+    }
+    // El servicio puede devolver solo la lectura actual mientras recompone
+    // el histórico. Conservar la última curva hasta recibir otra válida.
+    if(count)memcpy(state.points,fresh,count*sizeof(gluco::Point));
+    heap_caps_free(fresh);
+    if(count)state.pointCount=count;
+    state.current=current;
+    state.currentValid=currentValid;
+    text(state.direction,currentValid?gluco::libreTrend(reading["TrendArrow"]|0):"");
+    // Solo RAM. Ninguna escritura periódica a NVS ni trabajo adicional en HTTPS.
     state.glucoseFetched=time(nullptr);state.glucoseError[0]=0;return 120;
 }
 void connectionCacheLoad(AppState &state){

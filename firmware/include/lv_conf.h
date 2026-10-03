@@ -11,6 +11,9 @@
 #define LV_TICK_CUSTOM 1
 #define LV_TICK_CUSTOM_INCLUDE "Arduino.h"
 #define LV_TICK_CUSTOM_SYS_TIME_EXPR (millis())
+/* La interfaz no necesita más de diez redibujados por segundo. El panel RGB
+ * sigue barriendo su framebuffer con su temporización eléctrica normal. */
+#define LV_DISP_DEF_REFR_PERIOD 100
 #define LV_DPI_DEF 130
 #define LV_USE_LOG 0
 #define LV_USE_ASSERT_NULL 1
