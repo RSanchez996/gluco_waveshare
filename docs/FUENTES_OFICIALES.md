@@ -4,6 +4,7 @@
 
 - Producto 4.3B (ficha de 4.3B y 4.3B-BOX): <https://docs.waveshare.com/ESP32-S3-Touch-LCD-4.3B>
 - Repositorio oficial 4.3B: <https://github.com/waveshareteam/ESP32-S3-Touch-LCD-4.3B>
+- Guía de Waveshare, opciones de caché y XIP para LVGL: <https://docs.waveshare.com/ESP32-S3-Touch-LCD-4.3B/Instructions-For-Use>
 - Recursos y demo: <https://docs.waveshare.com/ESP32-S3-Touch-LCD-4.3B/Resources-And-Documents>
 - Desarrollo Arduino: <https://docs.waveshare.com/ESP32-S3-Touch-LCD-4.3B/Arduino>
 - Grabacion de firmware: <https://docs.waveshare.com/ESP32-S3-Touch-LCD-4.3B/Firmware-Flashing>
@@ -43,7 +44,9 @@ el puerto Type-C marcado UART sirve para grabar y leer el registro serie.
 - FAQ oficial sobre interferencias del LCD RGB y PSRAM:
   <https://docs.espressif.com/projects/esp-faq/en/latest/software-framework/peripherals/lcd.html>
 - Modos de framebuffer y buffer de rebote RGB en ESP32-S3:
-  <https://docs.espressif.com/projects/esp-idf/en/v5.3.6/esp32s3/api-reference/peripherals/lcd/rgb_lcd.html>
+  <https://docs.espressif.com/projects/esp-idf/en/v5.5.2/esp32s3/api-reference/peripherals/lcd/rgb_lcd.html>
+- Perfil de la 4.3B y pruebas del controlador, con opciones de caché y XIP:
+  <https://github.com/esp-arduino-libs/ESP32_Display_Panel>
 
 El proyecto fija Arduino-ESP32 3.3.12 y las bibliotecas de ESP-IDF 5.5.5.
 Sustituye la combinacion 3.1.1 / 5.3.2 que aparecia en el fallo anterior al
@@ -51,9 +54,15 @@ activar Wi-Fi.
 
 Espressif documenta que el barrido RGB puede sufrir corrupción si el reloj de
 píxeles supera el ancho de banda disponible de PSRAM o si una escritura en
-flash interrumpe el acceso al framebuffer. La 0.8.1 reduce el reloj RGB y
+flash interrumpe el acceso al framebuffer. El firmware reduce el reloj RGB y
 mantiene las fases de diagnóstico en RTC para evitar esas escrituras durante
 las consultas; solo las modificaciones reales de configuración usan NVS.
+
+Para el modo de rebote, Waveshare y Espressif recomiendan caché de 64 bytes y
+ejecución desde PSRAM. El SDK de Arduino está precompilado, y el firmware
+mantiene la ruta de inicialización del perfil oficial que ya funcionó en la
+placa. El reinicio manual del panel tras HTTPS o al despertar se solicita para
+el siguiente VSYNC; debe validarse durante un uso prolongado en hardware.
 
 En LVGL 8.4 la conversión de fuentes comprime los mapas por defecto. Las cinco
 fuentes `gluco_font_*.c` tienen `bitmap_format = 1`. Si

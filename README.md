@@ -14,6 +14,7 @@ Reloj de sobremesa con glucosa y pronóstico para **Waveshare ESP32-S3-Touch-LCD
 - La línea de estado principal muestra solo «Leyendo glucosa...» o la fecha y hora de la última lectura válida. Si todavía no hay ninguna muestra, muestra «Sin lectura válida».
 - Tema oscuro con tarjetas azuladas, lectura destacada con el color de glucosa y umbrales punteados en la gráfica. En glucosa, toca la zona **por encima de la gráfica** para apagar la retroiluminación; otro toque la enciende. El engranaje abre Ajustes.
 - El repintado de LVGL está limitado a **10 Hz** para reducir el trabajo de la interfaz mientras se usa Wi-Fi. El barrido eléctrico del panel RGB conserva su frecuencia de funcionamiento.
+- El panel RGB trabaja a 12 MHz con el perfil de inicialización Waveshare y buffers de rebote de veinte líneas. Al despertar resincroniza el barrido antes de encender la retroiluminación.
 
 No incluye Alexa, alarmas, Nightscout ni firmware precompilado.
 
@@ -94,6 +95,7 @@ Para cambiar de persona, entra en **Ajustes → Gestionar usuarios**. La elecci�
 - **Sin lecturas:** comprueba que la cuenta introducida sea la *receptora LibreLinkUp* y que en la aplicación oficial vea al usuario compartido. Revisa también que el móvil que recibe el sensor tenga Internet. La pantalla muestra la hora de la última lectura válida; tras cinco minutos sin una nueva, la lectura se atenúa.
 - **Falló el inicio de sesión o la localidad:** revisa el mensaje en la pantalla de ajustes correspondiente. El firmware realiza HTTPS en una tarea distinta del bucle de la pantalla; espera a que termine antes de repetir.
 - **WDT:** si aparece un reinicio, el portal muestra la fase en curso en el momento del fallo cuando puede conservarla. Una fase por sí sola no identifica qué tarea disparó el watchdog. El login y la búsqueda de localidad corren en CPU1 con prioridad 0, igual que las lecturas periódicas; se han reducido los JSON del login, separado las peticiones y borrado la marca de fase al concluir. Falta comprobar en la placa si desaparece el reinicio al iniciar sesión.
+- **Imagen desplazada:** el LCD RGB lee continuamente un framebuffer en PSRAM, incluso con la luz apagada. Revisa [la explicación del panel](docs/ARQUITECTURA.md) si ocurre tras HTTPS o al despertar. La resincronización se pide al terminar las operaciones de red y antes de volver a iluminar la pantalla; todavía necesita una prueba prolongada en la placa.
 - **No puedes usar el portal del QR:** confirma que sigue visible. Para el segundo QR, el móvil y la pantalla deben estar en la misma red. El servidor se cierra al salir de esa vista.
 
 ## Contenido

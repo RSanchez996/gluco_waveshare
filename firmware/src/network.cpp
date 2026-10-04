@@ -266,6 +266,9 @@ void task(void *) {
             const uint32_t wait = libre.read(*work);
             work->glucoseRequestStartedMs = 0;
             publish();
+            // La lectura y sus buffers ya se liberaron: recuperar un posible
+            // desfase del DMA RGB tras HTTPS sin reiniciar el ESP32.
+            displayRequestResync();
             appDiagnosticStage("Esperando siguiente consulta");
             lastRequest = millis();
             const bool transient=work->glucoseError[0] && wait<=120;
@@ -280,6 +283,7 @@ void task(void *) {
             Serial.println("[RED 1/1] Actualizando la lista de usuarios LibreLinkUp");
             const uint32_t wait = libre.listConnections(*work);
             publish();
+            displayRequestResync();
             appDiagnosticStage("Esperando siguiente consulta");
             lastRequest = millis();
             connectionsDue = lastRequest + std::max<uint32_t>(300, wait) * 1000;
@@ -291,6 +295,7 @@ void task(void *) {
             Serial.println("[RED 1/1] Consultando clima Open-Meteo");
             const uint32_t wait = weather();
             publish();
+            displayRequestResync();
             lastRequest = millis();
             weatherDue = lastRequest + std::max<uint32_t>(300, wait) * 1000;
         }

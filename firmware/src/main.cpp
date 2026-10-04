@@ -120,5 +120,25 @@ void setup(){
     if(!config.ssid.isEmpty()){appDiagnosticStage("Iniciando Wi-Fi");WiFi.begin(config.ssid.c_str(),config.wifiPass.c_str());}
     if(configNeedsSetup()){appDiagnosticStage("Abriendo configuracion");uiShowSetup();}appDiagnosticStage("Iniciando tareas");networkStart();Serial.println("[BOOT 6/6] Aplicacion preparada");
 }
-void loop(){portalLoop();static uint32_t last=0;if(millis()-last>=500){uiTick();last=millis();}if(rapidBoots&&millis()>60000){rapidBoots=0;Serial.println("[BOOT] Estable durante 60 s; contador de reinicios borrado");}if(faultBoots&&millis()>300000){Preferences p;if(p.begin("glucodiag",false)){p.putUChar("faults",0);p.end();faultBoots=0;}}lv_timer_handler();delay(5);}
+void loop(){
+    portalLoop();
+    displayServiceResync();
+    static uint32_t last=0;
+    if(millis()-last>=500){uiTick();last=millis();}
+    if(rapidBoots&&millis()>60000){
+        rapidBoots=0;
+        Serial.println("[BOOT] Estable durante 60 s; contador de reinicios borrado");
+    }
+    if(faultBoots&&millis()>300000){
+        Preferences p;
+        if(p.begin("glucodiag",false)){
+            p.putUChar("faults",0);
+            p.end();
+            faultBoots=0;
+            displayRequestResync(); // La escritura NVS compite con el LCD RGB.
+        }
+    }
+    lv_timer_handler();
+    delay(5);
+}
 void markPlannedRestart(){rapidBoots=0;}

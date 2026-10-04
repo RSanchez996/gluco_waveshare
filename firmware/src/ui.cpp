@@ -824,7 +824,6 @@ void uiClearGraphSelection(){
     if(page==Page::Home&&graph)lv_obj_invalidate(graph);
 }
 void uiTick(){
-    displayServiceResync();
     PendingPage next=pendingPage;
     pendingPage=PendingPage::None;
     if(mutationAwaiting!=SetupAction::None&&next!=PendingPage::None){

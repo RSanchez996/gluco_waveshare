@@ -219,5 +219,5 @@ void connectionCacheSave(const AppState &state){
     if(!state.connectionCount)return;LibreCredentials c{config.libreUser,config.librePass,config.libreRegion,config.libreVersion};
     xSemaphoreTake(storageMutex,portMAX_DELAY);Preferences p;if(p.begin("glucousers",false)){
         p.putString("owner",credentialIdentity(c));p.putBytes("items",state.connections,state.connectionCount*sizeof(ConnectionChoice));p.end();
-    }xSemaphoreGive(storageMutex);displayResync();
+    }xSemaphoreGive(storageMutex);displayRequestResync();
 }

@@ -192,7 +192,7 @@ bool persist(const Config &next) {
         p.end();
     }
     xSemaphoreGive(storageMutex);
-    if(ok)displayResync();
+    if(ok)displayRequestResync();
     return ok;
 }
 

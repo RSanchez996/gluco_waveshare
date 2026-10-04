@@ -6,7 +6,9 @@
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
 namespace {
-Board *board=nullptr; Touch *touchDevice=nullptr;bool screenSleeping=false,wakeGuard=false;
+Board *board=nullptr; Touch *touchDevice=nullptr;
+bool screenSleeping=false,wakeGuard=false,wakePending=false;
+uint32_t wakeVisibleAt=0;
 std::atomic<bool> resyncRequested{false};
 void flush(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *pixels){
     board->getLCD()->drawBitmap(area->x1,area->y1,area->x2-area->x1+1,area->y2-area->y1+1,reinterpret_cast<uint8_t *>(pixels));
@@ -16,6 +18,7 @@ void touch(lv_indev_drv_t *,lv_indev_data_t *data){
     TouchPoint point;const bool pressed=touchDevice&&touchDevice->readPoints(&point,1,0)>0;
     if(screenSleeping&&pressed){displayWake();wakeGuard=true;data->state=LV_INDEV_STATE_RELEASED;return;}
     if(wakeGuard){if(!pressed)wakeGuard=false;data->state=LV_INDEV_STATE_RELEASED;return;}
+    if(wakePending){data->state=LV_INDEV_STATE_RELEASED;return;}
     data->state=pressed?LV_INDEV_STATE_PRESSED:LV_INDEV_STATE_RELEASED;
     if(pressed){data->point.x=point.x;data->point.y=point.y;}
 }
@@ -23,16 +26,18 @@ void fatal(const char *message){Serial.printf("[FATAL DISPLAY] %s\n",message);Se
 }
 void displayInit(){
     Serial.println("[BOOT 2/6] Perfil oficial Waveshare 4.3B: ST7262 + GT911 + CH422G");
+    // Mantener el constructor predeterminado: activa la ruta de los drivers
+    // específicos del perfil 4.3B y los callbacks del expansor CH422G.
     board=new Board();if(!board||!board->init())fatal("board->init() fallo");
     auto lcd=board->getLCD();
     if(lcd){
         lcd->configFrameBufferNumber(1);
-        // El perfil Waveshare usa 16 MHz y 10 líneas. Con HTTPS y Wi-Fi,
-        // 12 MHz y 20 líneas dan más margen al ISR que rellena desde PSRAM.
-        // 20 líneas divide exactamente media pantalla (192000 / 16000 = 12).
         auto *bus=lcd->getBus();
         if(bus&&bus->getBasicAttributes().type==ESP_PANEL_BUS_TYPE_RGB){
             auto *rgb=static_cast<BusRGB *>(bus);
+            // Perfil Waveshare: 16 MHz y 10 líneas. Esta configuración de
+            // 12 MHz y 20 líneas ya mostró imagen en la placa del usuario.
+            // 192000 / (800 * 20) = 12 segmentos de media pantalla.
             if(!rgb->configRGB_FreqHz(12*1000*1000) ||
                !rgb->configRGB_BounceBufferSize(800*20))
                 fatal("No se pudo configurar el panel RGB");
@@ -46,7 +51,7 @@ void displayInit(){
     auto *a=static_cast<lv_color_t *>(heap_caps_malloc(count*sizeof(lv_color_t),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
     if(!a)fatal("sin memoria interna para LVGL");
     // RGB drawBitmap copia de forma síncrona al framebuffer PSRAM; un único
-    // buffer LVGL basta y recupera 28,8 KiB para el bounce buffer de 20 líneas.
+    // buffer LVGL evita otra reserva de 28,8 KiB de memoria interna.
     static lv_disp_draw_buf_t draw;lv_disp_draw_buf_init(&draw,a,nullptr,count);
     static lv_disp_drv_t driver;lv_disp_drv_init(&driver);driver.hor_res=800;driver.ver_res=480;driver.flush_cb=flush;driver.draw_buf=&draw;lv_disp_drv_register(&driver);
     if(touchDevice){static lv_indev_drv_t input;lv_indev_drv_init(&input);input.type=LV_INDEV_TYPE_POINTER;input.read_cb=touch;lv_indev_drv_register(&input);}
@@ -55,8 +60,23 @@ void displayInit(){
     lv_obj_set_style_text_font(label,&fonts::montserrat28,0);lv_obj_set_style_text_color(label,lv_color_hex(0xFFFFFF),0);lv_obj_set_style_text_align(label,LV_TEXT_ALIGN_CENTER,0);lv_obj_center(label);lv_refr_now(nullptr);
     Serial.println("[BOOT 3/6] LCD 800x480, LVGL y tactil preparados");
 }
-void displayWake(){screenSleeping=false;if(board&&board->getBacklight())board->getBacklight()->on();}
-void displaySleep(){uiClearGraphSelection();screenSleeping=true;if(board&&board->getBacklight())board->getBacklight()->off();Serial.println("[PANTALLA] Retroiluminacion apagada; toca para encender");}
+void displayWake(){
+    if(!screenSleeping)return;
+    screenSleeping=false;
+    wakePending=true;
+    wakeVisibleAt=0;
+    // El panel RGB ha seguido barriendo incluso sin retroiluminación.
+    // Mantenerla apagada hasta después de reiniciar DMA en VSYNC.
+    displayRequestResync();
+}
+void displaySleep(){
+    uiClearGraphSelection();
+    screenSleeping=true;
+    wakePending=false;
+    wakeVisibleAt=0;
+    if(board&&board->getBacklight())board->getBacklight()->off();
+    Serial.println("[PANTALLA] Retroiluminacion apagada; toca para encender");
+}
 bool displayIsSleeping(){return screenSleeping;}
 void displayResync(){
     if(!board||!board->getLCD())return;
@@ -69,5 +89,15 @@ void displayResync(){
 }
 void displayRequestResync(){resyncRequested.store(true,std::memory_order_release);}
 void displayServiceResync(){
-    if(resyncRequested.exchange(false,std::memory_order_acq_rel))displayResync();
+    if(resyncRequested.exchange(false,std::memory_order_acq_rel)){
+        displayResync();
+        // restart() solicita la resincronización en el próximo VSYNC, no
+        // espera a que acabe el barrido. Dejar margen de varios cuadros.
+        if(wakePending)wakeVisibleAt=millis()+160;
+    }
+    if(wakePending&&wakeVisibleAt&&int32_t(millis()-wakeVisibleAt)>=0){
+        if(board&&board->getBacklight())board->getBacklight()->on();
+        wakePending=false;
+        wakeVisibleAt=0;
+    }
 }

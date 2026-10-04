@@ -14,8 +14,15 @@ constexpr size_t kMaximumLimit = 768 * 1024;
 constexpr time_t kMinimumTlsTime = 1704067200; // 2024-01-01 UTC
 class BufferStream : public Stream {
 public:
-    explicit BufferStream(size_t requested) : limit(requested), capacity(std::min(requested + 1, size_t(16 * 1024))),
+    explicit BufferStream(size_t requested, size_t announced) : limit(requested),
+        capacity(std::min(requested + 1, std::max(size_t(16 * 1024), announced + 1))),
         data(static_cast<char *>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))), deadline(millis()+30000) {
+        if(!data && announced){
+            // Si la reserva completa no cabe por fragmentación, conservar el
+            // crecimiento progresivo que se usaba antes de esta optimización.
+            capacity=std::min(requested+1,size_t(16*1024));
+            data=static_cast<char *>(heap_caps_malloc(capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+        }
         if(data)data[0]=0;
     }
     const size_t limit;
@@ -129,8 +136,12 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     Serial.printf("[HTTPS] %s %s -> HTTP %d | tamaño anunciado %d\n",method,host.c_str(),r.status,http.getSize());
     if(r.status==429){r.retrySeconds=std::min(3600L,std::max(300L,http.header("Retry-After").toInt()));r.error="Límite temporal del proveedor";http.end();return r;}
     if(r.status>=300&&r.status<400){r.error="Redirección no permitida";http.end();return r;}
-    if(http.getSize()>int(responseLimit)){r.status=-2;r.error="Respuesta demasiado grande";http.end();return r;}
-    BufferStream buffer(responseLimit);if(!buffer.data){r.status=-2;r.error="Memoria HTTP insuficiente";http.end();return r;}
+    const int announcedSize=http.getSize();
+    if(announcedSize>int(responseLimit)){r.status=-2;r.error="Respuesta demasiado grande";http.end();return r;}
+    // Con Content-Length conocido, reservar una vez evita realloc y copias
+    // grandes de PSRAM mientras el RGB lee continuamente su framebuffer.
+    BufferStream buffer(responseLimit,announcedSize>0?size_t(announcedSize):0);
+    if(!buffer.data){r.status=-2;r.error="Memoria HTTP insuficiente";http.end();return r;}
     const int copied=http.writeToStream(&buffer);http.end();
     if(copied<0||buffer.exceeded||buffer.timedOut||buffer.outOfMemory){
         Serial.printf("[HTTPS] Cuerpo incompleto: copiados %d, recibidos %u, límite %u, timeout %d, overflow %d\n",

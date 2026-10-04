@@ -11,18 +11,27 @@ La inicialización conserva la secuencia del ejemplo oficial de Waveshare
 4. expansor CH422G para reset y retroiluminación;
 5. LVGL 8.4 con un buffer interno de 18 líneas.
 
-Se usa un framebuffer RGB en PSRAM y un buffer de rebote de veinte líneas.
-El perfil Waveshare v1.0.4 configura diez líneas; la guía de Espressif
-recomienda veinte o más cuando la recarga DMA puede retrasarse. Antes de iniciar
-el panel se fija el reloj RGB en 12 MHz para reducir la demanda de PSRAM
-mientras Wi-Fi está activo. LVGL usa un solo buffer interno de dieciocho líneas:
-`drawBitmap` de RGB copia al framebuffer de forma síncrona. Pasar de dos a un
-buffer LVGL libera 28 800 bytes y duplicar los dos buffers de rebote consume
-32 000 bytes adicionales; el balance interno es de unos 3 200 bytes.
+Se usa un framebuffer RGB en PSRAM y la **ruta de creación predeterminada**
+del perfil Waveshare para ST7262, GT911 y CH422G. El perfil oficial configura
+16 MHz y dos buffers de rebote de diez líneas; después de `board->init()` y
+antes de `board->begin()`, el firmware fija el reloj en 12 MHz y aumenta cada
+buffer de rebote a veinte líneas. Esta es la inicialización que ya mostró
+imagen en la placa. No se crea `Board(config)` ni se desactiva el rebote.
+Cambiar las opciones de caché o XIP de un ESP-IDF ya precompilado mediante
+banderas `-D` en `platformio.ini` tampoco es válido.
+
+LVGL usa un solo buffer interno de dieciocho líneas: `drawBitmap` copia al
+framebuffer de forma síncrona. Así se evita una segunda reserva de 28 800
+bytes de SRAM, independientemente del modo RGB que se elija.
 Después de guardar ajustes en NVS se resincroniza el barrido del panel RGB.
+Las consultas periódicas solicitan la misma resincronización al terminar y
+liberar sus buffers HTTP/JSON; el bucle principal acumula solicitudes simultáneas
+y pide un solo reinicio del DMA en el siguiente VSYNC. Si HTTPS proporciona
+`Content-Length`, el buffer de respuesta se reserva una vez para evitar copias
+por realojamiento en PSRAM durante la transferencia.
 La búsqueda táctil de localidades filtra los metadatos de Open-Meteo antes de
 reservar el JSON y usa una tarea HTTPS de prioridad 0 en CPU1. Al terminar,
-solicita una única resincronización RGB que ejecuta el bucle de LVGL, incluso
+solicita una única resincronización RGB que ejecuta el bucle principal, incluso
 si se abandonó la página de búsqueda. Esto recupera un desplazamiento del
 barrido; no impide por completo una perturbación transitoria mientras la radio
 y la pantalla compiten por el acceso a PSRAM.
@@ -31,6 +40,14 @@ bucle principal siguen atendiendo eventos con independencia de ese período.
 La frecuencia de redibujado de LVGL no modifica el barrido eléctrico RGB ni
 garantiza por sí sola que desaparezcan destellos causados por falta de ancho
 de banda de memoria durante TLS.
+
+Al apagar la pantalla solo se corta la retroiluminación del CH422G: el barrido
+RGB continúa. Al despertar, la luz permanece apagada mientras se solicita
+la resincronización en VSYNC y durante varios cuadros posteriores (160 ms),
+sin bloquear el bucle ni el watchdog. El toque de despertar no activa botones.
+Un desplazamiento persistente puede producirse también con la luz encendida:
+las consultas HTTPS y las escrituras NVS solicitan una resincronización al
+acabar. El apagado de la luz no reinicia el controlador RGB.
 
 ## Arranque por fases
 
