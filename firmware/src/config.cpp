@@ -499,9 +499,6 @@ void geocodeTask(void *argument) {
     auto *query=static_cast<String *>(argument);
     runGeocode(*query);
     delete query;
-    // Solicitar una sola resincronización al hilo de LVGL cuando se liberen
-    // los buffers de la búsqueda, incluso si el usuario salió de Ajustes.
-    displayRequestResync();
     appDiagnosticStage("Portal: inactivo");
     vTaskDelete(nullptr);
 }
