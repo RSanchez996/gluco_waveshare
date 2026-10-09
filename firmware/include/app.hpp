@@ -1,33 +1,60 @@
 #pragma once
-#include <Arduino.h>
-#include <lvgl.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/queue.h>
-#include <atomic>
 #include "core.hpp"
+#include <Arduino.h>
+#include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include <lvgl.h>
 
-constexpr const char *APP_VERSION = "1.0";
+constexpr const char *APP_VERSION = "2.0.0";
 constexpr size_t MAX_CONNECTIONS = 12;
 constexpr size_t MAX_EXTRA_WIFI = 4;
 enum class PortalMode : uint8_t { Off, WifiAccessPoint, WaitingForWifi, LocalNetwork };
-struct WifiEntry { String ssid, password; };
-struct WifiScanEntry { char ssid[33]{}; int rssi=-100; bool secure=true; };
-struct LocationChoice { char name[140]{}; float latitude=0, longitude=0; char timezone[32]{}; };
+struct WifiEntry {
+    String ssid, password;
+};
+struct WifiScanEntry {
+    char ssid[33]{};
+    int rssi = -100;
+    bool secure = true;
+};
+struct LocationChoice {
+    char name[140]{};
+    float latitude = 0, longitude = 0;
+    char timezone[32]{};
+};
 enum class SetupJob : uint8_t { Idle, Running, Ready, Failed };
 struct Config {
     String ssid, wifiPass;
     WifiEntry extraWifi[MAX_EXTRA_WIFI];
-    size_t extraWifiCount=0;
+    size_t extraWifiCount = 0;
     String libreUser, librePass, libreRegion = "eu", libreVersion = "5.1.1", patientId;
     String patientName, city, timezone = "Europe/Madrid";
     float latitude = 0, longitude = 0;
     bool locationSet = false;
 };
-struct ConnectionChoice { char id[100]{}; char name[100]{}; };
-struct PatientSelection { char id[100]{}; char name[100]{}; };
-struct WeatherHour { int64_t epoch = 0; float temperature = 0; int rain = 0; int code = 0; bool isDay = true; };
-struct WeatherDay { int64_t epoch = 0; float high = 0, low = 0; int rain = 0; int code = 0; };
+struct ConnectionChoice {
+    char id[100]{};
+    char name[100]{};
+};
+struct PatientSelection {
+    char id[100]{};
+    char name[100]{};
+};
+struct WeatherHour {
+    int64_t epoch = 0;
+    float temperature = 0;
+    int rain = 0;
+    int code = 0;
+    bool isDay = true;
+};
+struct WeatherDay {
+    int64_t epoch = 0;
+    float high = 0, low = 0;
+    int rain = 0;
+    int code = 0;
+};
 struct AppState {
     gluco::Point points[gluco::kMaxPoints]{};
     size_t pointCount = 0;
@@ -53,7 +80,16 @@ struct AppState {
     size_t dayCount = 0;
     int64_t weatherFetched = 0;
 };
-extern Config config;
+// No shared mutable Strings: readers own a copy, the data worker owns writes.
+Config configSnapshot();
+void configPublish(const Config &next);
+void configRuntimeInit();
+bool configService();
+void portalRuntimeStart();
+void uiRequestHome();
+void displayRequestWake();
+void appRecordDataTask(TaskHandle_t data);
+void appDiagnosticsJson(class Print &out);
 extern std::atomic<uint32_t> configRevision;
 extern AppState *sharedState;
 extern SemaphoreHandle_t stateMutex;
@@ -62,6 +98,10 @@ extern SemaphoreHandle_t httpMutex;
 extern QueueHandle_t patientQueue;
 extern std::atomic<bool> configUiActive;
 void configLoad();
+bool configBusy();
+bool configQueueFull(const Config &next, String &error, bool networksOnly = false);
+bool configQueueReset(String &error);
+String deviceLibreRegion();
 bool configSelectPatient(const char *id, const char *name);
 bool requestPatientSelection(const char *id, const char *name);
 bool configNeedsSetup();
@@ -81,13 +121,14 @@ bool deviceRemoveWifi(const String &ssid, String &error);
 bool deviceGeocode(const String &query, String &error);
 SetupJob deviceGeocodeResults(LocationChoice *out, size_t capacity, size_t &count, String &error);
 bool deviceSaveLocation(const LocationChoice &choice, String &error);
-bool deviceLibreLogin(const String &user, const String &password, const String &region, String &error);
+bool deviceLibreLogin(const String &user, const String &password, const String &region,
+                      String &error);
 SetupJob deviceLibreResults(ConnectionChoice *out, size_t capacity, size_t &count, String &error);
 bool deviceSaveLibreUser(const ConnectionChoice &choice, String &error);
-bool deviceQueueWifi(const String &ssid,const String &password,bool connectNow,String &error);
-bool deviceQueueRemoveWifi(const String &ssid,String &error);
-bool deviceQueueLocation(const LocationChoice &choice,String &error);
-bool deviceQueueLibreUser(const ConnectionChoice &choice,String &error);
+bool deviceQueueWifi(const String &ssid, const String &password, bool connectNow, String &error);
+bool deviceQueueRemoveWifi(const String &ssid, String &error);
+bool deviceQueueLocation(const LocationChoice &choice, String &error);
+bool deviceQueueLibreUser(const ConnectionChoice &choice, String &error);
 SetupJob deviceMutationResult(String &error);
 void displayInit();
 void displayWake();

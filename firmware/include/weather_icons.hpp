@@ -1,6 +1,6 @@
 #pragma once
-#include <lvgl.h>
 #include <cstdint>
+#include <lvgl.h>
 
 namespace weathericons {
 struct Icon {
@@ -11,4 +11,4 @@ struct Icon {
 
 // Formas vectoriales pequeñas: no requieren PNG, sprites ni fuente de emojis.
 lv_obj_t *create(lv_obj_t *parent, int x, int y, int size, Icon *data);
-}
+} // namespace weathericons

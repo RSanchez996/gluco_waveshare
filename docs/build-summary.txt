@@ -1,0 +1,33 @@
+Gluco Waveshare 2.0.0 — build validada 2026-10-08 UTC
+ESP-IDF v5.5.5 / Arduino-ESP32 3.3.12 / Xtensa GCC 14.2.0
+Target: ESP32-S3-Touch-LCD-4.3B/4.3B-BOX, 16 MB flash / 8 MB OPI PSRAM
+Compilación y enlace completos. No se ha probado hardware físico.
+
+Binarios (offset, bytes, SHA-256):
+bootloader.bin 0x0 22272 c2172e13a201b36cbdd43bfb78186e12da7f1f3dc15118e54b7f19cbb739f392
+partition-table.bin 0x8000 3072 ea8acf74da30d4199babad9a52c0e306c23af6d54ddb55b61d3d6b9a9296408b
+ota_data_initial.bin 0x69000 8192 7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f
+gluco_waveshare.bin 0x70000 1603904 c011e62555eac2bf058fe0965000df26f9fa8fa2d929361874504a9278fae839
+
+ELF con símbolos para diagnóstico:
+gluco_waveshare.elf 22096876 bytes SHA-256 f2d09b78311157551e98c2c3a2097b2c3c1ff6f3dcefcc9eac371adada0ed62f
+
+Tamaño estático de enlace (no representa heap libre durante ejecución):
+│ Flash Code        │      1012020 │          │                │               │
+│    .text          │      1012020 │          │                │               │
+│ Flash Data        │       473940 │          │                │               │
+│    .rodata        │       473684 │          │                │               │
+│    .appdesc       │          256 │          │                │               │
+│ DIRAM             │       130783 │    38.27 │         210977 │        341760 │
+│    .text          │        66779 │    19.54 │                │               │
+│    .data          │        34636 │    10.13 │                │               │
+│    .bss           │        29368 │     8.59 │                │               │
+│ IRAM              │        16384 │    100.0 │              0 │         16384 │
+│    .text          │        15356 │    93.73 │                │               │
+│    .vectors       │         1028 │     6.27 │                │               │
+│ RTC SLOW          │          108 │     1.32 │           8084 │          8192 │
+│    .rtc_noinit    │           76 │     0.93 │                │               │
+│    .force_slow    │           32 │     0.39 │                │               │
+│ RTC FAST          │           24 │     0.29 │           8168 │          8192 │
+│    .rtc_reserved  │           24 │     0.29 │                │               │
+Total image size: 1603791 bytes (.bin may be padded larger)

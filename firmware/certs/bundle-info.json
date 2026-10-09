@@ -1,7 +1,0 @@
-{
-  "certifi_version": "2026.07.22",
-  "certificates": 121,
-  "bytes": 55587,
-  "sha256": "49e7e1ca53f48330b1b507872f1447eb5f333632b6802282ec51aaab5640787c",
-  "format": "ESP-IDF compact X.509 bundle; public CA data only"
-}

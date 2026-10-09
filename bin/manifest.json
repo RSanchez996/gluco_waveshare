@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "target": "ESP32-S3-Touch-LCD-4.3B/BOX",
+  "idf": "5.5.5",
+  "images": [
+    {
+      "file": "bootloader.bin",
+      "offset": 0,
+      "size": 22272,
+      "sha256": "6941e7bd8298eba84d9268d30f41c8712ab6985a7d93280cc031d732bec15196"
+    },
+    {
+      "file": "partition-table.bin",
+      "offset": 32768,
+      "size": 3072,
+      "sha256": "ea8acf74da30d4199babad9a52c0e306c23af6d54ddb55b61d3d6b9a9296408b"
+    },
+    {
+      "file": "ota_data_initial.bin",
+      "offset": 430080,
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    {
+      "file": "gluco_waveshare.bin",
+      "offset": 458752,
+      "size": 1607280,
+      "sha256": "129a5a464c7582b362889a8fcb0679dcd8066a6d90d950ef9cf39193de5da7bb"
+    }
+  ]
+}

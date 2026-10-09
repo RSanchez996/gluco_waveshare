@@ -12,4 +12,4 @@ constexpr uint32_t Yellow = 0xFFD552;
 constexpr uint32_t Orange = 0xFF963D;
 constexpr uint32_t Blue = 0x75C3E9;
 constexpr uint32_t Grid = 0x2B414B;
-}
+} // namespace theme

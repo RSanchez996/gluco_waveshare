@@ -9,8 +9,8 @@
 #define LV_MEM_CUSTOM_FREE free
 #define LV_MEM_CUSTOM_REALLOC realloc
 #define LV_TICK_CUSTOM 1
-#define LV_TICK_CUSTOM_INCLUDE "Arduino.h"
-#define LV_TICK_CUSTOM_SYS_TIME_EXPR (millis())
+#define LV_TICK_CUSTOM_INCLUDE "esp_timer.h"
+#define LV_TICK_CUSTOM_SYS_TIME_EXPR ((uint32_t)(esp_timer_get_time() / 1000))
 /* La interfaz no necesita más de diez redibujados por segundo. El panel RGB
  * sigue barriendo su framebuffer con su temporización eléctrica normal. */
 #define LV_DISP_DEF_REFR_PERIOD 100
@@ -22,7 +22,7 @@
 #define LV_FONT_MONTSERRAT_20 0
 #define LV_FONT_MONTSERRAT_24 0
 #define LV_FONT_MONTSERRAT_28 0
-#define LV_FONT_MONTSERRAT_32 0
+#define LV_FONT_MONTSERRAT_32 1
 #define LV_FONT_MONTSERRAT_48 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 /* gluco_font_14/16/20/24/28.c are compressed (bitmap_format = 1).

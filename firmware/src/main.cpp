@@ -1,144 +1,193 @@
 #include "app.hpp"
-#include "fonts.hpp"
+#include "runtime.hpp"
+#include "sdk_guard.hpp"
 #include <WiFi.h>
-#include <esp_heap_caps.h>
-#include <esp_system.h>
 #include <esp_attr.h>
-#include <Preferences.h>
-Config config;AppState *sharedState=nullptr;SemaphoreHandle_t stateMutex=nullptr;SemaphoreHandle_t storageMutex=nullptr;SemaphoreHandle_t httpMutex=nullptr;QueueHandle_t patientQueue=nullptr;
-int arduinoCore=1;
-RTC_DATA_ATTR uint32_t bootMagic=0,rapidBoots=0,bootCount=0;
-// RTC_DATA_ATTR se reinicializa al arrancar tras determinados resets. NOINIT
-// conserva la última fase escrita incluso cuando el WDT reinicia la aplicación.
-struct FaultMarker { uint32_t magic; uint32_t checksum; char stage[64]; };
-RTC_NOINIT_ATTR FaultMarker lastFaultMarker;
+#include <esp_heap_caps.h>
+#include <esp_log.h>
+#include <esp_psram.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
+#include <esp_timer.h>
+#include <nvs_flash.h>
+
+AppState *sharedState = nullptr;
+SemaphoreHandle_t stateMutex = nullptr, storageMutex = nullptr, httpMutex = nullptr;
+QueueHandle_t patientQueue = nullptr;
 namespace {
-constexpr uint32_t kFaultMarkerMagic=0x474C5333;
-uint32_t stageChecksum(const char *stage){
-    uint32_t hash=2166136261UL;
-    for(const unsigned char *p=reinterpret_cast<const unsigned char *>(stage);*p;++p){hash^=*p;hash*=16777619UL;}
-    return hash;
-}
-bool validFaultMarker(){
-    return lastFaultMarker.magic==kFaultMarkerMagic &&
-           memchr(lastFaultMarker.stage,0,sizeof(lastFaultMarker.stage))!=nullptr &&
-           lastFaultMarker.stage[0] &&
-           stageChecksum(lastFaultMarker.stage)==lastFaultMarker.checksum;
-}
-esp_reset_reason_t lastResetReason=ESP_RST_UNKNOWN;
-uint8_t faultBoots=0;
-String faultStages[3];
-bool persistDiagnosticStage(const char *stage){
-    return strcmp(stage,"Iniciando Wi-Fi")==0 ||
-           strcmp(stage,"Libre: login HTTPS")==0 ||
-           strcmp(stage,"Libre: login JSON")==0 ||
-           strcmp(stage,"Libre: usuarios HTTPS")==0 ||
-           strcmp(stage,"Libre: usuarios JSON")==0 ||
-           strcmp(stage,"Libre: gráfica HTTPS")==0 ||
-           strcmp(stage,"Libre: procesando datos")==0 ||
-           strcmp(stage,"Libre: analizando JSON")==0 ||
-           strcmp(stage,"Portal: geocodificación HTTPS")==0;
-}
-void recordFaultBoot(){
-    Preferences p;
-    if(!p.begin("glucodiag",false))return;
-    const uint8_t previous=p.getUChar("faults",0);
-    const bool fault=lastResetReason==ESP_RST_TASK_WDT || lastResetReason==ESP_RST_INT_WDT ||
-                     lastResetReason==ESP_RST_PANIC || lastResetReason==ESP_RST_WDT;
-    faultBoots=fault?(previous>=3?3:previous+1):0;
-    if(fault){
-        // La marca NOINIT validada evita leer memoria no inicializada tras
-        // encender la placa y no escribe flash durante una consulta HTTPS.
-        const String stage=validFaultMarker()?String(lastFaultMarker.stage):p.getString("stage","Sin fase retenida en RTC");
-        if(faultBoots>=1 && faultBoots<=3)p.putString((String("fault")+String(faultBoots)).c_str(),stage);
-        for(unsigned i=0;i<3;++i)faultStages[i]=p.getString((String("fault")+String(i+1)).c_str(),"");
-    }else{
-        for(unsigned i=0;i<3;++i){const String key=String("fault")+String(i+1);if(p.isKey(key.c_str()))p.remove(key.c_str());}
-        if(p.isKey("stage"))p.remove("stage");
+std::atomic<TaskHandle_t> guiHandle{nullptr}, dataHandle{nullptr};
+SemaphoreHandle_t displayReady = nullptr;
+esp_reset_reason_t resetReason = ESP_RST_UNKNOWN;
+struct Retained {
+    uint32_t magic, checksum, boots;
+    char stage[64];
+};
+RTC_NOINIT_ATTR Retained retained;
+char previousStage[64]{};
+constexpr uint32_t magic = 0x47573230;
+uint32_t hash(const Retained &r) {
+    uint32_t n = 2166136261u;
+    for (char c : r.stage) {
+        n ^= uint8_t(c);
+        n *= 16777619u;
     }
-    lastFaultMarker.magic=0;
-    if(faultBoots!=previous)p.putUChar("faults",faultBoots);
-    p.end();
+    return n ^ r.boots;
 }
+portMUX_TYPE rtcLock = portMUX_INITIALIZER_UNLOCKED;
+std::atomic<bool> homeRequested{false};
+uint32_t boots = 1;
+void halt(const char *message) {
+    Serial.printf("[FATAL] %s\n", message);
+    // Yield: no busy loop, no watchdog disabled or fed to hide an error.
+    for (;;)
+        vTaskDelay(pdMS_TO_TICKS(1000));
 }
-const char *appPreviousFaultStage(unsigned index){return index<3?faultStages[index].c_str():"";}
-void appDiagnosticStage(const char *stage){
-    if(!stage||!stage[0])return;
-    // La fase NOINIT se escribe en RAM sin interrumpir el barrido RGB.
-    if(!persistDiagnosticStage(stage)){
-        // La marca describe una operación en curso, no la última operación
-        // que se completó. Evita atribuir un WDT posterior al login.
-        if(storageMutex)xSemaphoreTake(storageMutex,portMAX_DELAY);
-        lastFaultMarker.magic=0;
-        if(storageMutex)xSemaphoreGive(storageMutex);
-        return;
-    }
-    if(storageMutex)xSemaphoreTake(storageMutex,portMAX_DELAY);
-    if(validFaultMarker()&&strcmp(lastFaultMarker.stage,stage)==0){
-        if(storageMutex)xSemaphoreGive(storageMutex);
-        return;
-    }
-    lastFaultMarker.magic=0;
-    strlcpy(lastFaultMarker.stage,stage,sizeof(lastFaultMarker.stage));
-    lastFaultMarker.checksum=stageChecksum(lastFaultMarker.stage);
-    lastFaultMarker.magic=kFaultMarkerMagic;
-    if(storageMutex)xSemaphoreGive(storageMutex);
-    Serial.printf("[FASE] %s\n",stage);
-}
-const char *appResetReason(){
-    switch(lastResetReason){
-        case ESP_RST_POWERON:return "Encendido";
-        case ESP_RST_SW:return "Software";
-        case ESP_RST_PANIC:return "Excepción";
-        case ESP_RST_INT_WDT:return "WDT interrupción";
-        case ESP_RST_TASK_WDT:return "WDT tarea";
-        case ESP_RST_WDT:return "WDT";
-        case ESP_RST_BROWNOUT:return "Tensión baja";
-        default:return "Otro";
-    }
-}
-uint32_t appBootCount(){return bootCount;}
-int appWorkerCore(){return arduinoCore==0?1:0;}
-namespace {
-void halt(const char *message){Serial.printf("[FATAL] %s\n",message);Serial.println("El error queda detenido para poder leerlo. Reinicia despues de corregirlo.");Serial.flush();while(true)delay(1000);}
-void safeMode(){lv_obj_clean(lv_scr_act());lv_obj_set_style_bg_color(lv_scr_act(),lv_color_hex(0x3A1118),0);lv_obj_t *label=lv_label_create(lv_scr_act());String info="MODO SEGURO\nCausa: ";info+=appResetReason();info+="\n\nFase al reiniciarse:";for(unsigned i=0;i<3;++i)if(faultStages[i].length())info+="\nIntento "+String(i+1)+": "+faultStages[i];info+="\n\nAnota estas fases. Apaga por completo 10 segundos\ny vuelve a encender.";lv_label_set_text(label,info.c_str());lv_obj_set_width(label,730);lv_obj_set_style_text_font(label,&fonts::montserrat20,0);lv_obj_set_style_text_color(label,lv_color_hex(0xFFFFFF),0);lv_obj_set_style_text_align(label,LV_TEXT_ALIGN_CENTER,0);lv_obj_center(label);while(true){lv_timer_handler();delay(5);}}
-}
-void setup(){
-    arduinoCore=xPortGetCoreID();
-    Serial.begin(115200);delay(800);lastResetReason=esp_reset_reason();if(bootMagic!=0x47574C43){bootMagic=0x47574C43;rapidBoots=0;bootCount=0;}++rapidBoots;++bootCount;Serial.printf("\n[BOOT 1/6] Gluco Waveshare %s | intento rápido %u\n",APP_VERSION,rapidBoots);Serial.printf("Chip %s | flash %u MB | PSRAM %u MB | reset %d (%s) | arranque %u\n",ESP.getChipModel(),ESP.getFlashChipSize()/1048576U,ESP.getPsramSize()/1048576U,int(lastResetReason),appResetReason(),bootCount);
-    Serial.printf("[CPU] Interfaz %d | HTTPS 1 (prioridad 0) | guardado %d\n",arduinoCore,appWorkerCore());
-    if(!psramFound()||ESP.getPsramSize()<7*1024*1024)halt("No se detectan los 8 MB de PSRAM OPI");
-    recordFaultBoot();
-    storageMutex=xSemaphoreCreateMutex();stateMutex=xSemaphoreCreateMutex();httpMutex=xSemaphoreCreateMutex();patientQueue=xQueueCreate(1,sizeof(PatientSelection));sharedState=static_cast<AppState *>(heap_caps_calloc(1,sizeof(AppState),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));if(!storageMutex||!stateMutex||!httpMutex||!patientQueue||!sharedState)halt("No se pudo reservar memoria de estado");
-    // Los reinicios manuales o de alimentación no indican un WDT. El modo
-    // seguro se activa solo tras fallos consecutivos realmente registrados.
-    displayInit();if(faultBoots>=3)safeMode();appDiagnosticStage("Cargando ajustes");Serial.println("[BOOT 4/6] Leyendo configuración NVS");configLoad();uiInit();
-    // Pantalla alimentada por USB: evitar la latencia del modem-sleep en HTTPS.
-    // No modifica la persistencia NVS ni fuerza reconexiones durante una consulta.
-    WiFi.persistent(false);WiFi.setSleep(false);WiFi.setAutoReconnect(true);WiFi.mode(WIFI_STA);
-    configTzTime(config.timezone=="Atlantic/Canary"?"WET0WEST,M3.5.0/1,M10.5.0":config.timezone=="UTC"?"UTC0":"CET-1CEST,M3.5.0,M10.5.0/3","pool.ntp.org","time.cloudflare.com");
-    if(!config.ssid.isEmpty()){appDiagnosticStage("Iniciando Wi-Fi");WiFi.begin(config.ssid.c_str(),config.wifiPass.c_str());}
-    if(configNeedsSetup()){appDiagnosticStage("Abriendo configuracion");uiShowSetup();}appDiagnosticStage("Iniciando tareas");networkStart();Serial.println("[BOOT 6/6] Aplicacion preparada");
-}
-void loop(){
-    portalLoop();
-    displayServiceResync();
-    static uint32_t last=0;
-    if(millis()-last>=500){uiTick();last=millis();}
-    if(rapidBoots&&millis()>60000){
-        rapidBoots=0;
-        Serial.println("[BOOT] Estable durante 60 s; contador de reinicios borrado");
-    }
-    if(faultBoots&&millis()>300000){
-        Preferences p;
-        if(p.begin("glucodiag",false)){
-            p.putUChar("faults",0);
-            p.end();
-            faultBoots=0;
-            displayRequestResync(); // La escritura NVS compite con el LCD RGB.
+void gui(void *) {
+    guiHandle = xTaskGetCurrentTaskHandle();
+    displayInit();
+    xSemaphoreGive(displayReady);
+    uiInit();
+    if (configNeedsSetup())
+        uiShowSetup();
+    ESP_ERROR_CHECK(esp_task_wdt_add(nullptr));
+    uint32_t uiAt = 0, statsAt = 0;
+    for (;;) {
+        displayServiceResync();
+        if (homeRequested.exchange(false))
+            uiShowHome();
+        if (runtime::due(millis(), uiAt)) {
+            uiTick();
+            uiAt = millis() + 100;
         }
+        lv_timer_handler();
+        ESP_ERROR_CHECK(esp_task_wdt_reset());
+        if (runtime::due(millis(), statsAt)) {
+            statsAt = millis() + 60000;
+            Serial.printf(
+                "[HEALTH] uptime=%lu s internal=%u largest=%u psram=%u stack(gui/data)=%u/%u\n",
+                static_cast<unsigned long>(millis() / 1000),
+                unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                unsigned(ESP.getFreePsram()), unsigned(uxTaskGetStackHighWaterMark(nullptr)),
+                dataHandle ? unsigned(uxTaskGetStackHighWaterMark(dataHandle.load())) : 0);
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
-    lv_timer_handler();
-    delay(5);
 }
-void markPlannedRestart(){rapidBoots=0;}
+} // namespace
+int appWorkerCore() { return runtime::kDataCore; }
+void appRecordDataTask(TaskHandle_t data) { dataHandle.store(data); }
+void uiRequestHome() { homeRequested.store(true); }
+uint32_t appBootCount() { return boots; }
+const char *appPreviousFaultStage(unsigned i) { return i == 0 ? previousStage : ""; }
+void appDiagnosticStage(const char *stage) {
+    portENTER_CRITICAL(&rtcLock);
+    retained.magic = 0;
+    strlcpy(retained.stage, stage ? stage : "", sizeof(retained.stage));
+    retained.boots = boots;
+    retained.checksum = hash(retained);
+    retained.magic = magic;
+    portEXIT_CRITICAL(&rtcLock);
+}
+const char *appResetReason() {
+    switch (resetReason) {
+    case ESP_RST_POWERON:
+        return "Encendido";
+    case ESP_RST_SW:
+        return "Software";
+    case ESP_RST_PANIC:
+        return "Excepción";
+    case ESP_RST_INT_WDT:
+        return "WDT interrupción";
+    case ESP_RST_TASK_WDT:
+        return "WDT tarea";
+    case ESP_RST_WDT:
+        return "WDT";
+    case ESP_RST_BROWNOUT:
+        return "Tensión baja";
+    default:
+        return "Otro";
+    }
+}
+void markPlannedRestart() { appDiagnosticStage("Reinicio solicitado por el usuario"); }
+void appDiagnosticsJson(Print &out) {
+    out.printf(
+        "{\"version\":\"%s\",\"uptime_s\":%lu,\"reset\":\"%s\",\"internal_free\":%u,\"internal_"
+        "largest\":%u,\"psram_free\":%u,\"gui_stack_free\":%u,\"data_stack_free\":%u}",
+        APP_VERSION, static_cast<unsigned long>(millis() / 1000), appResetReason(),
+        unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        unsigned(ESP.getFreePsram()),
+        guiHandle ? unsigned(uxTaskGetStackHighWaterMark(guiHandle.load())) : 0,
+        dataHandle ? unsigned(uxTaskGetStackHighWaterMark(dataHandle.load())) : 0);
+}
+extern "C" void app_main() {
+    const esp_err_t initialNvs = nvs_flash_init();
+    if (initialNvs != ESP_OK) {
+        ESP_LOGE("gluco",
+                 "NVS no accesible (%s); configuración conservada. Respalda antes de borrar.",
+                 esp_err_to_name(initialNvs));
+        for (;;)
+            vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    initArduino();
+    Serial.begin(115200);
+    delay(400);
+    resetReason = esp_reset_reason();
+    if (retained.magic == magic && memchr(retained.stage, 0, sizeof(retained.stage)) &&
+        retained.checksum == hash(retained)) {
+        boots = retained.boots + 1;
+        strlcpy(previousStage, retained.stage, sizeof(previousStage));
+    }
+    Serial.printf("\n[Gluco %s] ESP-IDF %s reset=%s previous=%s\n", APP_VERSION,
+                  esp_get_idf_version(), appResetReason(), previousStage);
+    const size_t psramChip = esp_psram_get_size();
+    const size_t psramHeap = ESP.getPsramSize();
+    Serial.printf("[PSRAM] chip=%u (%u MB) heap=%u (%u MB) found=%d\n",
+                  unsigned(psramChip), unsigned(psramChip / (1024 * 1024)),
+                  unsigned(psramHeap), unsigned(psramHeap / (1024 * 1024)),
+                  int(psramFound()));
+    if (!psramFound() || (psramChip > 0 ? psramChip < 7 * 1024 * 1024 : psramHeap < 4 * 1024 * 1024))
+        halt("Se requieren 8 MB de PSRAM OPI");
+    // Never silently erase NVS on an error: existing credentials stay recoverable.
+    const esp_err_t nvs = nvs_flash_init();
+    if (nvs != ESP_OK)
+        halt("NVS no accesible: respalda antes de borrar");
+    stateMutex = xSemaphoreCreateMutex();
+    storageMutex = xSemaphoreCreateMutex();
+    httpMutex = xSemaphoreCreateMutex();
+    patientQueue = xQueueCreate(1, sizeof(PatientSelection));
+    sharedState = new AppState{};
+    if (!stateMutex || !storageMutex || !httpMutex || !patientQueue || !sharedState)
+        halt("Memoria de arranque insuficiente");
+    configRuntimeInit();
+    configLoad();
+    // Initialize/calibrate radio before RGB DMA starts; no automatic Wi-Fi NVS writes.
+    WiFi.persistent(false);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.mode(WIFI_STA);
+    Config settings = configSnapshot();
+    configTzTime(settings.timezone == "Atlantic/Canary" ? "WET0WEST,M3.5.0/1,M10.5.0"
+                 : settings.timezone == "UTC"           ? "UTC0"
+                                                        : "CET-1CEST,M3.5.0,M10.5.0/3",
+                 "pool.ntp.org", "time.cloudflare.com");
+    if (!settings.ssid.isEmpty())
+        WiFi.begin(settings.ssid.c_str(), settings.wifiPass.c_str());
+    // IDF keeps both idle watchdogs enabled; GUI is additionally monitored.
+    const esp_task_wdt_config_t wdt{8000, (1u << 0) | (1u << 1), true};
+    if (esp_task_wdt_status(nullptr) == ESP_ERR_INVALID_STATE)
+        ESP_ERROR_CHECK(esp_task_wdt_init(&wdt));
+    else
+        ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&wdt));
+    portalRuntimeStart();
+    displayReady = xSemaphoreCreateBinary();
+    if (!displayReady)
+        halt("Sin semáforo de arranque");
+    if (xTaskCreatePinnedToCore(gui, "gui", runtime::kGuiStack, nullptr, runtime::kGuiPriority,
+                                nullptr, runtime::kGuiCore) != pdPASS)
+        halt("No se pudo crear GUI");
+    if (xSemaphoreTake(displayReady, pdMS_TO_TICKS(15000)) != pdTRUE)
+        halt("LCD no confirmó arranque");
+    networkStart();
+}

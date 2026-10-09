@@ -132,7 +132,16 @@ async function api(path,data){
     throw Error("Se perdió la conexión con la pantalla. Comprueba que el móvil sigue en el mismo Wi-Fi, vuelve a escanear el QR y revisa si el ESP32 se ha reiniciado.");
   }
   let out;try{out=await r.json()}catch{throw Error("La pantalla cerró el portal o devolvió una respuesta no válida.")}
-  if(!r.ok)throw Error(out.message||`HTTP ${r.status}`);return out;
+  if(!r.ok)throw Error(out.message||`HTTP ${r.status}`);
+  if(data && out.state==='running' && ['/api/wifi','/api/wifi/networks','/api/save'].includes(path)) {
+    for(let i=0;i<90;i++) {
+      await wait(500);
+      const state=await api('/api/mutation/status');
+      if(state.state==='ready')return state;
+    }
+    throw Error('El guardado sigue pendiente. Comprueba su estado antes de repetirlo.');
+  }
+  return out;
 }
 async function scanWifi(){
   if(wifiScanBusy||busy)return;

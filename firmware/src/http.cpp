@@ -1,180 +1,322 @@
-#include "net.hpp"
 #include "app.hpp"
+#include "net.hpp"
+#include "runtime.hpp"
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
-#include <mbedtls/sha256.h>
 #include <algorithm>
-extern const uint8_t caStart[] asm("_binary_certs_x509_crt_bundle_start");
-extern const uint8_t caEnd[] asm("_binary_certs_x509_crt_bundle_end");
+#include <esp_crt_bundle.h>
+#include <esp_heap_caps.h>
+#include <esp_http_client.h>
+#include <mbedtls/sha256.h>
 namespace net {
 namespace {
-constexpr size_t kMinimumLimit = 4 * 1024;
-constexpr size_t kMaximumLimit = 768 * 1024;
-constexpr time_t kMinimumTlsTime = 1704067200; // 2024-01-01 UTC
-class BufferStream : public Stream {
-public:
-    explicit BufferStream(size_t requested, size_t announced) : limit(requested),
-        capacity(std::min(requested + 1, std::max(size_t(16 * 1024), announced + 1))),
-        data(static_cast<char *>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))), deadline(millis()+30000) {
-        if(!data && announced){
-            // Si la reserva completa no cabe por fragmentación, conservar el
-            // crecimiento progresivo que se usaba antes de esta optimización.
-            capacity=std::min(requested+1,size_t(16*1024));
-            data=static_cast<char *>(heap_caps_malloc(capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
-        }
-        if(data)data[0]=0;
-    }
-    const size_t limit;
-    size_t capacity;
-    char *data;
-    const uint32_t deadline;
-    size_t used = 0, bytesSinceSleep = 0; bool exceeded = false, timedOut = false, outOfMemory = false;
-    ~BufferStream() { heap_caps_free(data); }
-    size_t write(uint8_t c) override { return write(&c, 1); }
-    size_t write(const uint8_t *p, size_t n) override {
-        if (int32_t(millis() - deadline) >= 0) { timedOut = true; return 0; }
-        if (!data) { outOfMemory = true; return 0; }
-        if (used > limit || n > limit - used) { exceeded = true; return 0; }
-        if (used + n + 1 > capacity) {
-            size_t next = capacity;
-            while (next < used + n + 1) next = std::min(limit + 1, next * 2);
-            char *expanded = static_cast<char *>(heap_caps_realloc(data, next, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            if (!expanded) { outOfMemory = true; return 0; }
-            data = expanded; capacity = next;
-        }
-        memcpy(data + used, p, n); used += n; data[used] = 0;
-        bytesSinceSleep += n;
-        if (bytesSinceSleep >= 4 * 1024) {
-            bytesSinceSleep = 0;
-            // Pausa de 0.8.0: cede la CPU durante la descarga sin mantener
-            // la tarea de red ocupada continuamente.
-            vTaskDelay(1);
-        }
-        return n;
-    }
-    int available() override { return 0; } int read() override { return -1; }
-    int peek() override { return -1; } void flush() override {}
+std::atomic<bool> active{false};
+constexpr size_t kCapacity = 512 * 1024;
+// One reusable allocation; no HTTP body String or geometric PSRAM reallocations.
+char *bodyBuffer = nullptr;
+struct Transfer {
+    size_t used = 0, limit = kCapacity;
+    uint32_t deadline = 0;
+    bool failed = false;
 };
-bool safe(const String &s) { for (size_t i=0;i<s.length();++i) if ((uint8_t)s[i] < 32 || s[i] == 127) return false; return true; }
-const char *timezoneRule() {
-    if (config.timezone == "Atlantic/Canary") return "WET0WEST,M3.5.0/1,M10.5.0";
-    if (config.timezone == "UTC") return "UTC0";
-    return "CET-1CEST,M3.5.0,M10.5.0/3";
-}
-bool ensureTlsTime(String &error) {
-    if (time(nullptr) >= kMinimumTlsTime) return true;
-    Serial.println("[HTTPS] Esperando sincronización NTP antes de validar certificados...");
-    configTzTime(timezoneRule(), "pool.ntp.org", "time.cloudflare.com", "time.google.com");
-    const uint32_t deadline = millis() + 25000;
-    while (time(nullptr) < kMinimumTlsTime && int32_t(millis() - deadline) < 0) delay(250);
-    const time_t now = time(nullptr);
-    if (now < kMinimumTlsTime) {
-        error = "No se pudo sincronizar la hora por NTP; HTTPS no puede validar certificados";
-        Serial.printf("[HTTPS] NTP fallo; epoch=%lld\n", static_cast<long long>(now));
-        return false;
-    }
-    Serial.printf("[HTTPS] Hora sincronizada; epoch=%lld\n", static_cast<long long>(now));
+bool safe(const String &s) {
+    for (size_t i = 0; i < s.length(); ++i)
+        if (uint8_t(s[i]) < 32 || uint8_t(s[i]) == 127)
+            return false;
     return true;
 }
+esp_err_t event(esp_http_client_event_t *e) {
+    auto *t = static_cast<Transfer *>(e->user_data);
+    if (runtime::due(millis(), t->deadline)) {
+        t->failed = true;
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
+// Cooperative JSON parsing: bounded byte budget between FreeRTOS yields.
+// ArduinoJson owns all selected strings, so the reusable body may be overwritten.
+class Reader {
+    const char *data;
+    size_t length, pos = 0, budget = 0;
+
+  public:
+    Reader(const char *p, size_t n) : data(p), length(n) {}
+    int read() {
+        if (pos >= length)
+            return -1;
+        if (++budget >= 1024) {
+            budget = 0;
+            vTaskDelay(1);
+        }
+        return uint8_t(data[pos++]);
+    }
+    size_t readBytes(char *dst, size_t n) {
+        size_t count = 0;
+        for (; count < n && pos < length; ++count)
+            dst[count] = char(read());
+        return count;
+    }
+};
+} // namespace
+bool busy() { return active.load(); }
 String encode(const String &s) {
-    String out; out.reserve(s.length()*3); const char hex[]="0123456789ABCDEF";
-    for (size_t i=0;i<s.length();++i) { const uint8_t c=s[i];
-        if (isalnum(c)||c=='-'||c=='_'||c=='.'||c=='~') out+=char(c); else { out+='%';out+=hex[c>>4];out+=hex[c&15]; }
-    } return out;
+    String out;
+    out.reserve(s.length() * 3);
+    const char hex[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < s.length(); ++i) {
+        const uint8_t c = s[i];
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+            out += char(c);
+        else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
 }
 String sha256(const String &s) {
-    uint8_t digest[32]; mbedtls_sha256(reinterpret_cast<const unsigned char *>(s.c_str()), s.length(), digest, 0);
-    char value[65]; for (int i=0;i<32;++i) snprintf(value+i*2,3,"%02x",digest[i]); return String(value);
+    uint8_t digest[32];
+    mbedtls_sha256(reinterpret_cast<const unsigned char *>(s.c_str()), s.length(), digest, 0);
+    char text[65];
+    for (int i = 0; i < 32; ++i)
+        snprintf(text + i * 2, 3, "%02x", digest[i]);
+    return String(text);
 }
 Response request(const String &url, Doc &doc, const char *method, const String &body,
-                 std::initializer_list<Header> headers, size_t responseLimit, JsonVariantConst filter) {
-    Response r; doc.clear();
-    if (httpMutex) xSemaphoreTake(httpMutex, portMAX_DELAY);
-    struct Unlock { ~Unlock(){ if(httpMutex)xSemaphoreGive(httpMutex); } } unlock;
-    if (!url.startsWith("https://") || !safe(url)) { r.error="URL HTTPS no válida"; return r; }
-    responseLimit=std::min(kMaximumLimit,std::max(kMinimumLimit,responseLimit));
-    if (WiFi.status() != WL_CONNECTED) { r.error="Wi-Fi sin conexión a Internet"; return r; }
-    if (!ensureTlsTime(r.error)) return r;
-    const int slash = url.indexOf('/', 8);
-    const String host = slash < 0 ? url.substring(8) : url.substring(8, slash);
-    Serial.printf("[HTTPS] %s %s | RSSI %d | heap %u | PSRAM %u\n",
-                  method, host.c_str(), WiFi.RSSI(), ESP.getFreeHeap(), ESP.getFreePsram());
-    const bool libreHost = host.endsWith(".libreview.io");
-    const uint16_t readTimeoutMs = libreHost ? 30000 : 20000;
-    WiFiClientSecure client; client.setCACertBundle(caStart,size_t(caEnd-caStart)); client.setHandshakeTimeout(20); client.setTimeout(readTimeoutMs);
-    HTTPClient http;
-    if (!http.begin(client,url)) { r.error="No se pudo abrir la URL HTTPS"; return r; }
-    http.setConnectTimeout(12000); http.setTimeout(readTimeoutMs); http.setReuse(false);
-    String userAgent("GlucoWaveshare/");userAgent+=APP_VERSION;http.setUserAgent(userAgent);
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    const char *keys[]{"Retry-After"}; http.collectHeaders(keys,1);
-    http.addHeader("Accept","application/json"); http.addHeader("Accept-Encoding","identity");
-    if (strcmp(method,"GET")) http.addHeader("Content-Type","application/json");
-    for (const auto &h:headers) {
-        if(!safe(h.value)){r.error="Cabecera no válida";http.end();return r;}
-        if(String(h.name).equalsIgnoreCase("User-Agent")) http.setUserAgent(h.value);
-        else http.addHeader(h.name,h.value);
-    }
-    const uint32_t requestStarted = millis();
-    r.status=http.sendRequest(method,body);
-    if(r.status<=0){
-        const String detail=HTTPClient::errorToString(r.status);
-        r.error="Conexión HTTPS con "+host+" falló ("+String(r.status)+": "+detail+")";
-        if (r.status == HTTPC_ERROR_READ_TIMEOUT && libreHost) {
-            // Solo metadatos locales: nunca registrar ni publicar contraseñas o tokens.
-            const unsigned internal = unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024);
-            const unsigned largest = unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024);
-            r.error += " [" + String(millis() - requestStarted) + " ms; RSSI " +
-                       String(WiFi.RSSI()) + " dBm; RAM " + String(internal) +
-                       " KB; bloque " + String(largest) + " KB]";
-        }
-        Serial.printf("[HTTPS] Fallo %s: %d %s | epoch=%lld | heap=%u | psram=%u\n",host.c_str(),r.status,detail.c_str(),static_cast<long long>(time(nullptr)),ESP.getFreeHeap(),ESP.getFreePsram());
-        http.end();return r;
-    }
-    Serial.printf("[HTTPS] %s %s -> HTTP %d | tamaño anunciado %d\n",method,host.c_str(),r.status,http.getSize());
-    if(r.status==429){r.retrySeconds=std::min(3600L,std::max(300L,http.header("Retry-After").toInt()));r.error="Límite temporal del proveedor";http.end();return r;}
-    if(r.status>=300&&r.status<400){r.error="Redirección no permitida";http.end();return r;}
-    const int announcedSize=http.getSize();
-    if(announcedSize>int(responseLimit)){r.status=-2;r.error="Respuesta demasiado grande";http.end();return r;}
-    // Con Content-Length conocido, reservar una vez evita realloc y copias
-    // grandes de PSRAM mientras el RGB lee continuamente su framebuffer.
-    BufferStream buffer(responseLimit,announcedSize>0?size_t(announcedSize):0);
-    if(!buffer.data){r.status=-2;r.error="Memoria HTTP insuficiente";http.end();return r;}
-    const int copied=http.writeToStream(&buffer);http.end();
-    if(copied<0||buffer.exceeded||buffer.timedOut||buffer.outOfMemory){
-        Serial.printf("[HTTPS] Cuerpo incompleto: copiados %d, recibidos %u, límite %u, timeout %d, overflow %d\n",
-                      copied,unsigned(buffer.used),unsigned(responseLimit),buffer.timedOut,buffer.exceeded);
-        r.status=-2;
-        r.error=buffer.timedOut?"Tiempo de lectura HTTPS agotado":
-                buffer.outOfMemory?"Memoria HTTP insuficiente":
-                buffer.exceeded?"Respuesta HTTPS demasiado grande":"Respuesta HTTPS incompleta";
+                 std::initializer_list<Header> headers, size_t limit, JsonVariantConst filter) {
+    Response r;
+    doc.clear();
+    if (xPortGetCoreID() != runtime::kDataCore) {
+        r.error = "HTTP fuera del trabajador de datos";
         return r;
     }
-    if(buffer.used){
-        if(url.indexOf("/graph")>=0)appDiagnosticStage("Libre: analizando JSON");
-        else if(url.endsWith("/llu/auth/login"))appDiagnosticStage("Libre: login JSON");
-        else if(url.endsWith("/llu/connections"))appDiagnosticStage("Libre: usuarios JSON");
-        DeserializationError e = filter.isNull()
-            ? deserializeJson(doc,buffer.data,buffer.used)
-            : deserializeJson(doc,buffer.data,buffer.used,DeserializationOption::Filter(filter));
-        if(e&&r.status>=200&&r.status<300){
-            r.status=-3;r.error="JSON no reconocido: "+String(e.c_str());
-            Serial.printf("[HTTPS] JSON inválido (%s), %u bytes recibidos\n",e.c_str(),unsigned(buffer.used));
+    const bool isHttps = url.startsWith("https://");
+    const bool isHttp = url.startsWith("http://");
+    if ((!isHttps && !isHttp) || !safe(url)) {
+        r.error = "URL HTTP no válida";
+        return r;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        r.error = "Wi-Fi sin conexión";
+        return r;
+    }
+    if (isHttps && time(nullptr) < 1704067200) {
+        Serial.println("[HTTP] Esperando sincronización NTP previa a conexión TLS...");
+        const uint32_t ntpWaitDeadline = millis() + 8000;
+        while (time(nullptr) < 1704067200 && !runtime::due(millis(), ntpWaitDeadline)) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        if (time(nullptr) < 1704067200) {
+            Serial.println("[HTTP] Error: Reloj sin hora válida tras espera NTP");
+            r.error = "Esperando hora NTP para validar certificados";
+            return r;
+        }
+        Serial.println("[HTTP] Hora NTP sincronizada correctamente");
+    }
+    if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        r.error = "Red ocupada";
+        return r;
+    }
+    active.store(true);
+    struct Guard {
+        ~Guard() {
+            active.store(false);
+            xSemaphoreGive(httpMutex);
+        }
+    } guard;
+    if (!bodyBuffer)
+        bodyBuffer = static_cast<char *>(
+            heap_caps_malloc(kCapacity + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!bodyBuffer) {
+        r.error = "Memoria HTTP insuficiente";
+        return r;
+    }
+    Transfer t;
+    t.limit = std::min(kCapacity, std::max<size_t>(4096, limit));
+    t.deadline = millis() + 50000;
+    esp_http_client_config_t options{};
+    options.url = url.c_str();
+    if (isHttps) {
+        options.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+    options.event_handler = event;
+    options.user_data = &t;
+    options.timeout_ms = 25000;
+    options.buffer_size = 8192;
+    options.buffer_size_tx = 4096;
+    options.addr_type = HTTP_ADDR_TYPE_INET;
+    options.disable_auto_redirect = true;
+    options.keep_alive_enable = false;
+    auto client = esp_http_client_init(&options);
+    if (!client) {
+        r.error = "No se pudo crear HTTP";
+        return r;
+    }
+    struct Cleanup {
+        esp_http_client_handle_t h;
+        ~Cleanup() { esp_http_client_cleanup(h); }
+    } cleanup{client};
+    esp_http_client_set_method(client,
+                               strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
+    esp_http_client_set_header(client, "Accept", "application/json");
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    esp_http_client_set_header(client, "Connection", "close");
+    const String userAgent = String("GlucoWaveshare/") + APP_VERSION;
+    esp_http_client_set_header(client, "User-Agent", userAgent.c_str());
+    if (!body.isEmpty()) {
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(client, body.c_str(), body.length());
+    }
+    for (const auto &h : headers) {
+        if (!safe(h.value)) {
+            r.error = "Cabecera no válida";
+            return r;
+        }
+        esp_http_client_set_header(client, h.name, h.value.c_str());
+    }
+    const uint32_t started = millis();
+    Serial.printf("[HTTP] Abriendo conexion a %s\n", url.c_str());
+    esp_err_t result = esp_http_client_open(client, body.length());
+    if (result != ESP_OK) {
+        const int err = esp_http_client_get_errno(client);
+        Serial.printf("[HTTP] Reintentando tras fallo conexion %s a %s: result=%s (%d), errno=%d\n",
+                      isHttps ? "HTTPS" : "HTTP", url.c_str(), esp_err_to_name(result), int(result), err);
+        esp_http_client_cleanup(client);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        t.deadline = millis() + 45000;
+        t.failed = false;
+        client = esp_http_client_init(&options);
+        if (client) {
+            cleanup.h = client;
+            esp_http_client_set_method(client,
+                                       strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
+            esp_http_client_set_header(client, "Accept", "application/json");
+            esp_http_client_set_header(client, "Accept-Encoding", "identity");
+            esp_http_client_set_header(client, "Connection", "close");
+            esp_http_client_set_header(client, "User-Agent", userAgent.c_str());
+            if (!body.isEmpty()) {
+                esp_http_client_set_header(client, "Content-Type", "application/json");
+                esp_http_client_set_post_field(client, body.c_str(), body.length());
+            }
+            for (const auto &h : headers) {
+                esp_http_client_set_header(client, h.name, h.value.c_str());
+            }
+            result = esp_http_client_open(client, body.length());
         }
     }
-    if(r.status==430){
-        r.retrySeconds=15*60;
-        r.error="LibreLinkUp rechazó temporalmente la solicitud (HTTP 430); nuevo intento en 15 min";
-    }else if(r.status==403&&host.endsWith(".libreview.io")){
-        r.retrySeconds=15*60;
-        r.error="LibreLinkUp denegó el acceso (HTTP 403). Verifica región y cuenta; espera 15 min antes de reintentar";
-    }else if(r.status>=400){
-        const char *message=doc["message"]|"";
-        r.error="Proveedor HTTP "+String(r.status);
-        if(*message)r.error+=" - "+String(message);
+    if (result != ESP_OK) {
+        const int err = esp_http_client_get_errno(client);
+        Serial.printf("[HTTP] Error conexion %s a %s: result=%s (%d), errno=%d\n",
+                      isHttps ? "HTTPS" : "HTTP", url.c_str(), esp_err_to_name(result), int(result), err);
+        r.error = "No se pudo conectar " + String(isHttps ? "HTTPS: " : "HTTP: ") + String(esp_err_to_name(result));
+        return r;
+    }
+    size_t sent = 0;
+    while (sent < body.length() && !runtime::due(millis(), t.deadline)) {
+        const int n = esp_http_client_write(client, body.c_str() + sent, body.length() - sent);
+        if (n <= 0) {
+            r.error = "POST HTTP incompleto";
+            return r;
+        }
+        sent += n;
+        vTaskDelay(1);
+    }
+    if (sent != body.length()) {
+        r.error = "Tiempo del POST HTTP agotado";
+        return r;
+    }
+    esp_http_client_set_timeout_ms(client, 25000);
+    const int64_t declared = esp_http_client_fetch_headers(client);
+    r.status = esp_http_client_get_status_code(client);
+    if (declared < 0) {
+        const int err = esp_http_client_get_errno(client);
+        Serial.printf("[HTTP] Timeout esperando cabeceras de %s: status=%d, errno=%d\n",
+                      url.c_str(), r.status, err);
+        r.error = "Tiempo de espera HTTPS agotado esperando respuesta";
+        return r;
+    }
+    if (declared > int64_t(t.limit)) {
+        r.error = "Respuesta HTTPS demasiado grande";
+        return r;
+    }
+    t.used = 0;
+    while (t.used < t.limit) {
+        if (declared > 0 && int64_t(t.used) >= declared)
+            break;
+        if (runtime::due(millis(), t.deadline)) {
+            Serial.printf("[HTTP] Timeout leyendo body de %s (usados: %u bytes)\n",
+                          url.c_str(), unsigned(t.used));
+            t.failed = true;
+            break;
+        }
+        const size_t toRead = std::min<size_t>(4096, t.limit - t.used);
+        const int n = esp_http_client_read(client, bodyBuffer + t.used, toRead);
+        if (n <= 0) {
+            // Fin de stream, socket cerrado o fin de chunks
+            break;
+        }
+        t.used += n;
+        if (esp_http_client_is_chunked_response(client) &&
+            esp_http_client_is_complete_data_received(client))
+            break;
+    }
+    if (t.failed) {
+        r.status = -2;
+        r.error = "Tiempo de espera HTTP agotado";
+        return r;
+    }
+    if (declared > 0 && int64_t(t.used) < declared) {
+        Serial.printf("[HTTP] Respuesta truncada de %s: %u de %lld bytes\n",
+                      url.c_str(), unsigned(t.used), declared);
+        r.status = -2;
+        r.error = "Respuesta HTTP truncada";
+        return r;
+    }
+    if (t.used == 0 && r.status == 200) {
+        Serial.printf("[HTTP] Respuesta vacía de %s\n", url.c_str());
+        r.status = -2;
+        r.error = "Respuesta HTTP vacía";
+        return r;
+    }
+    bodyBuffer[t.used] = 0;
+    Serial.printf(
+        "[HTTP] %s %d %u bytes %lu ms internal=%u largest=%u\n", isHttps ? "HTTPS" : "HTTP", r.status, unsigned(t.used),
+        static_cast<unsigned long>(millis() - started),
+        unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+    if (r.status >= 300 && r.status < 400) {
+        r.error = "Redirección HTTP no permitida";
+        return r;
+    }
+    if (r.status == 429) {
+        r.retrySeconds = 900;
+        r.error = "Límite temporal del proveedor; reintento en 15 min";
+        return r;
+    }
+    if (r.status == 403 || r.status == 430) {
+        r.retrySeconds = 900;
+        r.error = "Acceso temporalmente rechazado (HTTP " + String(r.status) + ")";
+        return r;
+    }
+    if (t.used) {
+        Reader reader(bodyBuffer, t.used);
+        const auto error =
+            filter.isNull() ? deserializeJson(doc, reader)
+                            : deserializeJson(doc, reader, DeserializationOption::Filter(filter));
+        if (error && r.status >= 200 && r.status < 300) {
+            r.status = -3;
+            r.error = "JSON no reconocido: " + String(error.c_str());
+            return r;
+        }
+    }
+    if (r.status >= 400) {
+        r.error = "Error HTTP " + String(r.status);
+        const char *message = doc["message"] | "";
+        if (!*message)
+            message = doc["error"]["message"] | "";
+        if (*message)
+            r.error += " - " + String(message);
     }
     return r;
 }
-}
+} // namespace net
