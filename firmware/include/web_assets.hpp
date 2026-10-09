@@ -16,12 +16,13 @@ const char WEB_INDEX[] PROGMEM = R"GLUCO_INDEX(<!doctype html>
   <em id="state">Conectando...</em>
 </header>
 <main>
-  <div class="notice" id="notice">Este portal solo funciona mientras el QR está visible en la pantalla.</div>
+  <div class="notice" id="notice">Configuración de Gluco Waveshare. El portal se cerrará al guardar o pulsar Cerrar.</div>
   <nav>
     <button type="button" data-step="start" class="active">Inicio</button>
     <button type="button" data-step="wifi">Wi-Fi</button>
     <button type="button" data-step="libre">LibreLinkUp</button>
     <button type="button" data-step="patient">Usuario</button>
+    <button type="button" data-step="diabetesm">Diabetes:M</button>
     <button type="button" data-step="location">Ubicación</button>
     <button type="button" data-step="finish">Guardar</button>
   </nav>
@@ -32,6 +33,7 @@ const char WEB_INDEX[] PROGMEM = R"GLUCO_INDEX(<!doctype html>
       <div class="actions">
         <button type="button" id="openWifi">Cambiar red Wi-Fi</button>
         <button type="button" class="primary" id="openServices">LibreLinkUp, usuario y clima</button>
+        <button type="button" id="openDiabetesM">Cuenta Diabetes:M</button>
       </div>
     </section>
     <section id="wifi" class="step">
@@ -67,6 +69,15 @@ const char WEB_INDEX[] PROGMEM = R"GLUCO_INDEX(<!doctype html>
       <p>La pantalla nunca cambiará de persona automáticamente si hay varias conexiones.</p>
       <div id="patients" class="choices"><p class="hint">Inicia sesión en el paso anterior.</p></div>
     </section>
+    <section id="diabetesm" class="step">
+      <p class="eyebrow">SINCRONIZACIÓN</p><h1>Cuenta Diabetes:M</h1>
+      <p>Sube automáticamente las lecturas de glucosa a tu diario de <strong>Diabetes:M</strong> cada vez que se reciban de LibreLinkUp.</p>
+      <label>Usuario o correo<input id="diabetesm_user" maxlength="160" autocomplete="username"></label>
+      <label>Contraseña<input id="diabetesm_password" type="password" maxlength="256" autocomplete="current-password"></label>
+      <label class="checkbox"><input id="diabetesm_enabled" type="checkbox"> Activar sincronización continua con Diabetes:M</label>
+      <p class="hint" id="diabetesmMessage">Si ya existe una clave guardada, déjala vacía para conservarla.</p>
+      <button type="button" class="primary" id="saveDiabetesMStep">Continuar a Ubicación</button>
+    </section>
     <section id="location" class="step">
       <p class="eyebrow">OPCIONAL</p><h1>Tu ubicación</h1>
       <p>Selecciona tu localidad para ver el clima. Puedes guardarla ahora o añadirla más tarde en Ajustes.</p>
@@ -93,6 +104,7 @@ const char WEB_CSS[] PROGMEM = R"GLUCO_CSS(*{box-sizing:border-box}body{margin:0
 
 .network-row{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;padding:12px;margin:10px 0;border:1px solid #30363d;border-radius:12px}.network-row label{margin:0}.network-row button{margin-bottom:1px}@media(max-width:600px){.network-row{grid-template-columns:1fr}.network-row button{justify-self:start}}
 .scan-header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:24px}.scan-header h2{margin:0;font-size:18px}.scan-header button{font-size:13px}.scan-row{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid #30363d;border-radius:12px;background:#121519}.scan-row>div{flex:1;min-width:0;overflow-wrap:anywhere}.scan-row strong,.scan-row small{display:block}.scan-row small{color:#9aa4ae}.scan-row button{font-size:13px;padding:8px 10px}@media(max-width:600px){.scan-row{flex-wrap:wrap}.scan-row>div{flex-basis:100%}}
+.checkbox{display:flex;align-items:center;gap:12px;cursor:pointer;margin:18px 0 6px;font-size:15px;color:#f2f4f7}.checkbox input{width:20px;height:20px;margin:0;cursor:pointer;accent-color:#21a366}
 )GLUCO_CSS";
 const char WEB_JS[] PROGMEM = R"GLUCO_JS("use strict";
 (()=>{
@@ -195,6 +207,8 @@ function step(id){
 document.querySelectorAll("nav button").forEach(x=>x.addEventListener("click",()=>step(x.dataset.step)));
 $("openWifi").addEventListener("click",()=>step("wifi"));
 $("openServices").addEventListener("click",()=>step("libre"));
+$("openDiabetesM").addEventListener("click",()=>step("diabetesm"));
+$("saveDiabetesMStep").addEventListener("click",()=>step("location"));
 
 const credentials=()=>({user:$("libre_user").value.trim(),password:$("libre_password").value,region:$("libre_region").value,version:$("libre_version").value.trim()});
 
@@ -223,7 +237,7 @@ $("loginLibre").addEventListener("click",async()=>{
     for(const p of r.patients){
       const b=document.createElement("button");b.type="button";b.className="choice";b.innerHTML="<strong></strong><small></small>";
       b.querySelector("strong").textContent=p.name;b.querySelector("small").textContent=p.id;
-      b.addEventListener("click",()=>{document.querySelectorAll("#patients .choice").forEach(x=>x.classList.remove("selected"));b.classList.add("selected");selected=p;message(`Usuario seleccionado: ${p.name}`)});
+      b.addEventListener("click",()=>{document.querySelectorAll("#patients .choice").forEach(x=>x.classList.remove("selected"));b.classList.add("selected");selected=p;message(`Usuario seleccionado: ${p.name}`);step("diabetesm");});
       $("patients").append(b);
     }
     $("libreMessage").textContent=`Sesión correcta: ${r.patients.length} usuario(s) compartido(s).`;message("Sesión correcta. Elige la persona que mostrará la pantalla.");step("patient");
@@ -252,10 +266,11 @@ $("searchCity").addEventListener("click",async()=>{
   }catch(e){$("locationMessage").textContent=e.message;message(e.message,true)}finally{busy=false;$("searchCity").disabled=false;}
 });
 
-function payload(){return{ssid:$("ssid").value.trim(),wifi_password:$("wifi_password").value,libre_user:$("libre_user").value.trim(),libre_password:$("libre_password").value,libre_region:$("libre_region").value,libre_version:$("libre_version").value.trim(),patient_id:selected.id,patient_name:selected.name,city:location?.name||$("city").value,latitude:Number(location?.latitude??$("latitude").value),longitude:Number(location?.longitude??$("longitude").value),timezone:location?.timezone||$("timezone").value,location_set:!!(location||$("city").value)};}
+function payload(){return{ssid:$("ssid").value.trim(),wifi_password:$("wifi_password").value,libre_user:$("libre_user").value.trim(),libre_password:$("libre_password").value,libre_region:$("libre_region").value,libre_version:$("libre_version").value.trim(),patient_id:selected.id,patient_name:selected.name,diabetesm_user:$("diabetesm_user").value.trim(),diabetesm_password:$("diabetesm_password").value,diabetesm_enabled:$("diabetesm_enabled").checked,city:location?.name||$("city").value,latitude:Number(location?.latitude??$("latitude").value),longitude:Number(location?.longitude??$("longitude").value),timezone:location?.timezone||$("timezone").value,location_set:!!(location||$("city").value)};}
 function summary(){
   $("summary").innerHTML="";
-  const rows=[["Wi-Fi",$("ssid").value||"Pendiente"],["Cuenta",$("libre_user").value||"Pendiente"],["Usuario",selected.name||"Pendiente"],["Ubicación",location?.name||$("city").value||"Pendiente"]];
+  const dmStatus=$("diabetesm_enabled")?.checked?($("diabetesm_user").value?`Activo (${$("diabetesm_user").value})`:"Activo"):"Desactivado";
+  const rows=[["Wi-Fi",$("ssid").value||"Pendiente"],["Cuenta",$("libre_user").value||"Pendiente"],["Usuario",selected.name||"Pendiente"],["Diabetes:M",dmStatus],["Ubicación",location?.name||$("city").value||"Pendiente"]];
   for(const [k,v] of rows){const d=document.createElement("div"),b=document.createElement("b");b.textContent=k;d.append(b,document.createTextNode(v));$("summary").append(d)}
 }
 
@@ -288,13 +303,15 @@ async function start(){
     if(cfg.settings_state==="invalid")message("Hay ajustes en NVS, pero no se pudieron leer. Conserva una copia de NVS antes de volver a guardar.",true);
     else if(cfg.settings_state==="unavailable")message("No se pudo abrir la memoria de ajustes NVS. Evita guardar de nuevo hasta comprobar la placa.",true);
     else if(cfg.settings_state==="missing")message("No aparecen ajustes guardados en NVS. Comprueba si tienes una copia anterior antes de configurar de nuevo.",true);
-    for(const id of ["ssid","libre_user","libre_region","libre_version","city","latitude","longitude","timezone"])if($(id))$(id).value=cfg[id]??"";
+    for(const id of ["ssid","libre_user","libre_region","libre_version","diabetesm_user","city","latitude","longitude","timezone"])if($(id))$(id).value=cfg[id]??"";
     if(cfg.has_wifi_password)$("wifi_password").placeholder="Guardada; deja vacío para conservar";
     if(cfg.portal_mode!=="wifi"){
       $("extraWifiSection").hidden=false;
       for(const n of cfg.wifi_networks||[])wifiNetworkRow(n.ssid,n.has_password);
     }
     if(cfg.has_libre_password)$("libre_password").placeholder="Guardada; deja vacío para conservar";
+    if(cfg.has_diabetesm_password)$("diabetesm_password").placeholder="Guardada; deja vacío para conservar";
+    if($("diabetesm_enabled"))$("diabetesm_enabled").checked=!!cfg.diabetesm_enabled;
     if(cfg.patient_id)selected={id:cfg.patient_id,name:cfg.patient_name||cfg.patient_id};
     if(cfg.location_set)location={name:cfg.city,latitude:cfg.latitude,longitude:cfg.longitude,timezone:cfg.timezone};
     summary();
@@ -302,7 +319,7 @@ async function start(){
       $("state").textContent="Paso 1 de 2";$("notice").textContent="Configura solamente el Wi-Fi. Después aparecerá un segundo QR en la pantalla.";
       document.querySelectorAll("nav button").forEach(x=>x.hidden=x.dataset.step!=="wifi");step("wifi");
     }else{
-      $("state").textContent=`En red local · ${cfg.ip}`;$("notice").textContent="Configura Wi-Fi, LibreLinkUp y, si quieres, tu localidad para el clima. El portal se cerrará al guardar.";step("start");
+      $("state").textContent=`En red local · ${cfg.ip}`;$("notice").textContent="Configura Wi-Fi, LibreLinkUp, Diabetes:M y el clima. Se cerrará al guardar o pulsar Cerrar.";step("start");
     }
   }catch(e){message(e.message,true);document.querySelectorAll("button").forEach(x=>x.disabled=true)}
 }

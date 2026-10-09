@@ -9,7 +9,7 @@
 namespace {
 Config config;
 uint32_t uiConfigRevision = UINT32_MAX;
-enum class Page { Home, Clock, Users, Settings, Wifi, WifiEdit, Location, Libre, Setup };
+enum class Page { Home, Clock, Users, Settings, Wifi, WifiEdit, Location, Libre, Setup, DiabetesM };
 Page page = Page::Home;
 AppState snapshot;
 enum class PendingPage {
@@ -23,12 +23,13 @@ enum class PendingPage {
     Location,
     Libre,
     Setup,
-    CloseSetup
+    CloseSetup,
+    DiabetesM
 };
 PendingPage pendingPage = PendingPage::None;
 lv_obj_t *timeLabel = nullptr, *dateLabel = nullptr, *weatherLabel = nullptr,
          *weatherSummary = nullptr, *homeIcon = nullptr, *glucoseLabel = nullptr,
-         *detailLabel = nullptr, *errorLabel = nullptr, *graph = nullptr, *arrow = nullptr;
+         *detailLabel = nullptr, *graph = nullptr, *arrow = nullptr;
 lv_obj_t *glucosePanel = nullptr, *glucoseAccent = nullptr;
 lv_obj_t *clockBig = nullptr, *clockDate = nullptr, *clockWeather = nullptr,
          *clockSummary = nullptr, *clockIcon = nullptr, *hoursBox = nullptr, *hoursTab = nullptr,
@@ -36,7 +37,8 @@ lv_obj_t *clockBig = nullptr, *clockDate = nullptr, *clockWeather = nullptr,
 lv_obj_t *keyboard = nullptr, *keyboardToggle = nullptr, *keyboardLastInput = nullptr,
          *wifiList = nullptr, *wifiSaved = nullptr, *wifiSsid = nullptr, *wifiPass = nullptr,
          *cityInput = nullptr, *locationList = nullptr, *loginUser = nullptr, *loginPass = nullptr,
-         *loginRegion = nullptr, *loginList = nullptr, *setupStatus = nullptr;
+         *loginRegion = nullptr, *loginList = nullptr, *diabetesmUser = nullptr,
+         *diabetesmPass = nullptr, *diabetesmSwitch = nullptr, *setupStatus = nullptr;
 WifiScanEntry scanEntries[16]{};
 size_t scanCount = 0;
 LocationChoice locationEntries[8]{};
@@ -55,7 +57,8 @@ enum class SetupAction {
     SearchLocation,
     SaveLocation,
     Login,
-    SaveLogin
+    SaveLogin,
+    SaveDiabetesM
 };
 SetupAction setupAction = SetupAction::None;
 SetupAction mutationAwaiting = SetupAction::None;
@@ -263,7 +266,12 @@ void drawGraph(lv_event_t *e) {
         snprintf(lastReadingTxt, sizeof(lastReadingTxt), "ÚLTIMA LECTURA: %02d:%02d", local.tm_hour,
                  local.tm_min);
     }
-    drawText(ctx, x + 5, bounds.y1 + 7, 350, lastReadingTxt, theme::Blue);
+    drawText(ctx, x + 5, bounds.y1 + 7, 210, lastReadingTxt, theme::Blue);
+    if (snapshot.glucoseError[0]) {
+        const bool inProgress = strstr(snapshot.glucoseError, "...") != nullptr;
+        drawText(ctx, x + 220, bounds.y1 + 7, bounds.x2 - (x + 230), snapshot.glucoseError,
+                 inProgress ? theme::Muted : theme::Red);
+    }
     lv_draw_rect_dsc_t band;
     lv_draw_rect_dsc_init(&band);
     band.bg_color = c(theme::Green);
@@ -453,8 +461,7 @@ void drawArrow(lv_event_t *e) {
     lv_area_t area;
     lv_obj_get_coords(lv_event_get_target(e), &area);
     auto *ctx = lv_event_get_draw_ctx(e);
-    uint32_t color =
-        gluco::stale(reading->epoch, time(nullptr)) ? theme::Muted : rangeColor(reading->glucose);
+    uint32_t color = rangeColor(reading->glucose);
     if (!known) {
         drawText(ctx, area.x1 + 20, area.y1 + 22, 55, "--", theme::Muted);
         return;
@@ -560,7 +567,16 @@ void buildHome() {
     lv_obj_clear_flag(glucoseAccent, LV_OBJ_FLAG_CLICKABLE);
 
     label(glucosePanel, 28, 12, 200, "GLUCOSA ACTUAL", &fonts::montserrat14, theme::Muted);
-    glucoseLabel = label(glucosePanel, 28, 34, 125, "---", &fonts::montserrat48, theme::Muted);
+    const gluco::Point *currentReading = latestReading();
+    if (currentReading && currentReading->glucose > 0) {
+        char val[12];
+        snprintf(val, sizeof(val), "%d", currentReading->glucose);
+        const uint32_t col = rangeColor(currentReading->glucose);
+        glucoseLabel = label(glucosePanel, 28, 34, 125, val, &fonts::montserrat48, col);
+        lv_obj_set_style_bg_color(glucoseAccent, c(col), 0);
+    } else {
+        glucoseLabel = label(glucosePanel, 28, 34, 125, "---", &fonts::montserrat48, theme::Muted);
+    }
     label(glucosePanel, 155, 64, 60, "mg/dL", &fonts::montserrat14, theme::Muted);
 
     arrow = lv_obj_create(glucosePanel);
@@ -573,13 +589,6 @@ void buildHome() {
 
     detailLabel =
         label(glucosePanel, 28, 90, 330, "Sin lectura", &fonts::montserrat16, theme::Muted);
-    errorLabel =
-        label(lv_scr_act(), 24, 134, 690, "Sin lectura válida", &fonts::montserrat14, theme::Muted);
-    lv_label_set_long_mode(errorLabel, LV_LABEL_LONG_DOT);
-    lv_obj_t *gear = button(lv_scr_act(), 724, 126, 58, "", settings);
-    lv_obj_set_size(gear, 58, 30);
-    lv_obj_set_style_radius(gear, 8, 0);
-    lv_obj_add_event_cb(gear, drawSettingsIcon, LV_EVENT_DRAW_MAIN, nullptr);
 
     graph = lv_obj_create(lv_scr_act());
     lv_obj_set_pos(graph, 18, runtime::kGraphY);
@@ -645,9 +654,11 @@ void buildClock() {
     lv_obj_clear_flag(hoursBox, LV_OBJ_FLAG_SCROLLABLE);
     label(hoursBox, 35, 95, 690, "Esperando pronóstico...", &fonts::montserrat20, theme::Muted);
 
-    button(lv_scr_act(), 18, 418, 244, "Glucosa", homePage);
-    hoursTab = button(lv_scr_act(), 278, 418, 244, "Por horas", requestHours);
-    daysTab = button(lv_scr_act(), 538, 418, 244, "4 días", requestDays);
+    button(lv_scr_act(), 18, 418, 210, "Glucosa", homePage);
+    hoursTab = button(lv_scr_act(), 238, 418, 210, "Por horas", requestHours);
+    daysTab = button(lv_scr_act(), 458, 418, 210, "4 días", requestDays);
+    lv_obj_t *clockGear = button(lv_scr_act(), 678, 418, 104, "", settings);
+    lv_obj_add_event_cb(clockGear, drawSettingsIcon, LV_EVENT_DRAW_MAIN, nullptr);
 }
 void selectUser(lv_event_t *event) {
     const size_t index = size_t(reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
@@ -740,8 +751,8 @@ void buildSetup() {
         lv_qrcode_update(setupQr, qr.c_str(), qr.length());
         String info = "Abre desde el móvil:\n\n" + portalUrl() +
                       "\n\nSeñal Wi-Fi: " + String(WiFi.RSSI()) +
-                      " dBm\n\nDesde el portal puedes cambiar la red y configurar LibreLinkUp. "
-                      "Clima configurable.\n\nSe cerrará al guardar o tras 10 minutos.";
+                      " dBm\n\nConfigura LibreLinkUp, Diabetes:M, Wi-Fi y clima desde tu móvil."
+                      "\n\nPuedes cerrar esta pantalla cuando quieras.";
         setupInfo = label(lv_scr_act(), 310, 130, 455, info.c_str(), &fonts::montserrat20);
         lv_label_set_long_mode(setupInfo, LV_LABEL_LONG_WRAP);
     }
@@ -751,6 +762,7 @@ void gotoSettings(lv_event_t *) { pendingPage = PendingPage::Settings; }
 void gotoWifi(lv_event_t *) { pendingPage = PendingPage::Wifi; }
 void gotoLocation(lv_event_t *) { pendingPage = PendingPage::Location; }
 void gotoLibre(lv_event_t *) { pendingPage = PendingPage::Libre; }
+void gotoDiabetesM(lv_event_t *) { pendingPage = PendingPage::DiabetesM; }
 void gotoQr(lv_event_t *) { pendingPage = PendingPage::Setup; }
 void setupMessage(const String &message) {
     if (setupStatus)
@@ -759,8 +771,8 @@ void setupMessage(const String &message) {
 void setupHeader(const char *title, bool root = false) {
     configUiActive.store(true, std::memory_order_release);
     keyboard = keyboardToggle = keyboardLastInput = wifiList = wifiSaved = wifiSsid = wifiPass =
-        cityInput = locationList = loginUser = loginPass = loginRegion = loginList = setupStatus =
-            nullptr;
+        cityInput = locationList = loginUser = loginPass = loginRegion = loginList = diabetesmUser =
+            diabetesmPass = diabetesmSwitch = setupStatus = nullptr;
     lv_obj_clean(lv_scr_act());
     base(lv_scr_act());
     label(lv_scr_act(), 26, 16, 680, title, &fonts::montserrat28);
@@ -1155,7 +1167,10 @@ void toggleKeyboard(lv_event_t *) {
     }
     lv_obj_t *field = keyboardLastInput;
     if (!field)
-        field = page == Page::WifiEdit ? wifiSsid : page == Page::Location ? cityInput : loginUser;
+        field = page == Page::WifiEdit    ? wifiSsid
+                : page == Page::Location  ? cityInput
+                : page == Page::DiabetesM ? diabetesmUser
+                                          : loginUser;
     showKeyboard(field);
 }
 void focusInput(lv_event_t *e) { showKeyboard(lv_event_get_target(e)); }
@@ -1237,17 +1252,23 @@ void buildSettings() {
     button(lv_scr_act(), 408, 119, 364, "Ubicación y clima", gotoLocation);
     button(lv_scr_act(), 28, 190, 356, "Cuenta LibreLinkUp", gotoLibre);
     button(lv_scr_act(), 408, 190, 364, "Gestionar usuarios", usersPage);
-    label(lv_scr_act(), 30, 273, 733,
+    label(lv_scr_act(), 30, 258, 733,
           config.ssid.isEmpty() ? "Wi-Fi: pendiente" : ("Wi-Fi: " + config.ssid).c_str(),
           &fonts::montserrat16);
-    label(lv_scr_act(), 30, 306, 733,
+    label(lv_scr_act(), 30, 286, 733,
           config.libreUser.isEmpty() ? "LibreLinkUp: pendiente"
                                      : ("LibreLinkUp: " + config.libreUser).c_str(),
           &fonts::montserrat16);
-    label(lv_scr_act(), 30, 339, 733,
+    label(lv_scr_act(), 30, 314, 733,
           config.locationSet ? ("Clima: " + config.city).c_str() : "Clima: sin ubicación",
           &fonts::montserrat16);
+    label(lv_scr_act(), 30, 342, 733,
+          config.diabetesmEnabled
+              ? ("Diabetes:M: activo (" + (config.diabetesmUser.isEmpty() ? "sin usuario" : config.diabetesmUser) + ")").c_str()
+              : "Diabetes:M: desactivado",
+          &fonts::montserrat16);
     button(lv_scr_act(), 28, 374, 355, "Configurar con QR", gotoQr);
+    button(lv_scr_act(), 408, 374, 364, "Cuenta Diabetes:M", gotoDiabetesM);
     if (strcmp(configStorageState(), "invalid") == 0 ||
         strcmp(configStorageState(), "unavailable") == 0)
         setupMessage("NVS no legible: haz una copia antes de guardar ajustes.");
@@ -1486,6 +1507,45 @@ void buildLibre() {
                                               : "Usuario guardado: " + config.patientName);
     makeKeyboard();
 }
+void saveDiabetesM(lv_event_t *) {
+    actionUser = lv_textarea_get_text(diabetesmUser);
+    actionPassword = lv_textarea_get_text(diabetesmPass);
+    actionConnect = diabetesmSwitch && lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED);
+    hideKeyboard(nullptr);
+    setupAction = SetupAction::SaveDiabetesM;
+}
+void buildDiabetesM() {
+    page = Page::DiabetesM;
+    setupHeader("Cuenta Diabetes:M");
+    label(lv_scr_act(), 28, 65, 700, "Sube automáticamente las lecturas de glucosa a Diabetes:M",
+          &fonts::montserrat14, theme::Muted);
+
+    label(lv_scr_act(), 28, 100, 500, "Usuario / Correo de Diabetes:M", &fonts::montserrat14, theme::Muted);
+    diabetesmUser = setupInput(28, 122, 744, config.diabetesmUser.c_str(), 160);
+
+    label(lv_scr_act(), 28, 180, 500, "Contraseña (vacía para conservar la actual)", &fonts::montserrat14, theme::Muted);
+    diabetesmPass = setupInput(28, 202, 744, "", 256, true);
+
+    diabetesmSwitch = lv_switch_create(lv_scr_act());
+    lv_obj_set_pos(diabetesmSwitch, 28, 268);
+    lv_obj_set_size(diabetesmSwitch, 64, 32);
+    lv_obj_set_style_bg_color(
+        diabetesmSwitch, c(theme::Green),
+        lv_style_selector_t(LV_PART_INDICATOR) | lv_style_selector_t(LV_STATE_CHECKED));
+    if (config.diabetesmEnabled)
+        lv_obj_add_state(diabetesmSwitch, LV_STATE_CHECKED);
+    else
+        lv_obj_clear_state(diabetesmSwitch, LV_STATE_CHECKED);
+
+    label(lv_scr_act(), 105, 274, 500, "Activar sincronización con Diabetes:M", &fonts::montserrat16);
+
+    button(lv_scr_act(), 28, 325, 355, "Guardar", saveDiabetesM);
+    button(lv_scr_act(), 408, 325, 364, "Ajustes", gotoSettings);
+
+    setupMessage(config.diabetesmEnabled ? "Sincronización activa con cada lectura de LibreLinkUp."
+                                         : "Activa la casilla para sincronizar.");
+    makeKeyboard();
+}
 void clockPage(lv_event_t *) { pendingPage = PendingPage::Clock; }
 void homePage(lv_event_t *) { pendingPage = PendingPage::Home; }
 void usersPage(lv_event_t *) { pendingPage = PendingPage::Users; }
@@ -1711,6 +1771,9 @@ void uiTick() {
         portalStop();
         buildSettings();
         break;
+    case PendingPage::DiabetesM:
+        buildDiabetesM();
+        break;
     case PendingPage::None:
         break;
     }
@@ -1775,6 +1838,14 @@ void uiTick() {
             } else
                 setupMessage(error.isEmpty() ? "Selecciona un usuario" : error);
             break;
+        case SetupAction::SaveDiabetesM:
+            if (deviceQueueDiabetesM(actionUser, actionPassword, actionConnect, error)) {
+                mutationAwaiting = action;
+                setupMessage("Guardando Diabetes:M...");
+            } else
+                setupMessage(error);
+            actionPassword = "";
+            break;
         case SetupAction::None:
             break;
         }
@@ -1791,6 +1862,9 @@ void uiTick() {
             } else if (saved == SetupAction::SaveWifi) {
                 pendingPage = PendingPage::Settings;
                 setupMessage("Wi-Fi guardado.");
+            } else if (saved == SetupAction::SaveDiabetesM) {
+                pendingPage = PendingPage::Settings;
+                setupMessage("Diabetes:M guardado.");
             } else {
                 pendingPage = PendingPage::Settings;
                 setupMessage("Cambios guardados.");
@@ -1899,9 +1973,6 @@ void uiTick() {
                 lv_label_set_text(glucoseLabel, "---");
             if (strcmp(lv_label_get_text(detailLabel), "Cambio pendiente"))
                 lv_label_set_text(detailLabel, "Cambio pendiente");
-            const char *waiting = "Leyendo glucosa...";
-            if (strcmp(lv_label_get_text(errorLabel), waiting))
-                lv_label_set_text(errorLabel, waiting);
             const int64_t waitingMinute = time(nullptr) / 60;
             if (waitingMinute != renderedMinute) {
                 renderedMinute = waitingMinute;
@@ -1924,7 +1995,9 @@ void uiTick() {
     const int64_t requestStep = snapshot.glucoseRequestStartedMs ? 1 : 0;
     const bool chartChanged =
         renderedGlucose != snapshot.glucoseFetched || renderedPoints != snapshot.pointCount ||
-        renderedLatestEpoch != latestEpoch || renderedLatestValue != latestValue;
+        renderedLatestEpoch != latestEpoch || renderedLatestValue != latestValue ||
+        strcmp(renderedGlucoseError, snapshot.glucoseError) != 0 ||
+        requestStep != renderedRequestStep;
     if (selectedGraphEpoch && renderedGlucose >= 0 && snapshot.glucoseFetched > 0 &&
         snapshot.glucoseFetched != renderedGlucose)
         uiClearGraphSelection();
@@ -1952,16 +2025,9 @@ void uiTick() {
                 char value[12];
                 snprintf(value, sizeof(value), "%d", latest->glucose);
                 lv_label_set_text(glucoseLabel, value);
-                lv_obj_set_style_text_color(glucoseLabel,
-                                            c(gluco::stale(latest->epoch, now)
-                                                  ? theme::Muted
-                                                  : rangeColor(latest->glucose)),
-                                            0);
-                lv_obj_set_style_bg_color(glucoseAccent,
-                                          c(gluco::stale(latest->epoch, now)
-                                                ? theme::Muted
-                                                : rangeColor(latest->glucose)),
-                                          0);
+                const uint32_t color = rangeColor(latest->glucose);
+                lv_obj_set_style_text_color(glucoseLabel, c(color), 0);
+                lv_obj_set_style_bg_color(glucoseAccent, c(color), 0);
                 int diff = 0, minutes = 0;
                 char detail[80];
                 if (snapshot.currentValid && snapshot.pointCount &&
@@ -1980,27 +2046,11 @@ void uiTick() {
                 lv_label_set_text(detailLabel, detail);
             } else {
                 lv_label_set_text(glucoseLabel, "---");
+                lv_obj_set_style_text_color(glucoseLabel, c(theme::Muted), 0);
                 lv_label_set_text(detailLabel, "Sin lectura");
                 lv_obj_set_style_bg_color(glucoseAccent, c(theme::Muted), 0);
             }
             lv_obj_invalidate(arrow);
-        }
-        if (glucoseChanged || minuteChanged || requestStep != renderedRequestStep) {
-            char status[180];
-            if (snapshot.glucoseRequestStartedMs) {
-                strlcpy(status, "Leyendo glucosa...", sizeof(status));
-            } else if (snapshot.glucoseError[0]) {
-                strlcpy(status, snapshot.glucoseError, sizeof(status));
-            } else if (latest) {
-                time_t t = latest->epoch;
-                tm local{};
-                localtime_r(&t, &local);
-                char stamp[20];
-                strftime(stamp, sizeof(stamp), "%d/%m %H:%M", &local);
-                snprintf(status, sizeof(status), "Última lectura válida: %s", stamp);
-            } else
-                strlcpy(status, "Sin lectura válida", sizeof(status));
-            lv_label_set_text(errorLabel, status);
         }
         renderedRequestStep = requestStep;
         // Reposicionar la gráfica cada diez minutos sin redibujarla cada minuto.

@@ -19,6 +19,7 @@ struct Response {
     int status = 0;
     String error;
     uint32_t retrySeconds = 60;
+    String cookie;
 };
 Response request(const String &url, Doc &doc, const char *method = "GET", const String &body = "",
                  std::initializer_list<Header> headers = {}, size_t responseLimit = 96 * 1024,

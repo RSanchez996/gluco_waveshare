@@ -33,6 +33,8 @@ struct Config {
     String patientName, city, timezone = "Europe/Madrid";
     float latitude = 0, longitude = 0;
     bool locationSet = false;
+    String diabetesmUser, diabetesmPass;
+    bool diabetesmEnabled = false;
 };
 struct ConnectionChoice {
     char id[100]{};
@@ -129,6 +131,7 @@ bool deviceQueueWifi(const String &ssid, const String &password, bool connectNow
 bool deviceQueueRemoveWifi(const String &ssid, String &error);
 bool deviceQueueLocation(const LocationChoice &choice, String &error);
 bool deviceQueueLibreUser(const ConnectionChoice &choice, String &error);
+bool deviceQueueDiabetesM(const String &user, const String &password, bool enabled, String &error);
 SetupJob deviceMutationResult(String &error);
 void displayInit();
 void displayWake();

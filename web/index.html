@@ -13,12 +13,13 @@
   <em id="state">Conectando...</em>
 </header>
 <main>
-  <div class="notice" id="notice">Este portal solo funciona mientras el QR está visible en la pantalla.</div>
+  <div class="notice" id="notice">Configuración de Gluco Waveshare. El portal se cerrará al guardar o pulsar Cerrar.</div>
   <nav>
     <button type="button" data-step="start" class="active">Inicio</button>
     <button type="button" data-step="wifi">Wi-Fi</button>
     <button type="button" data-step="libre">LibreLinkUp</button>
     <button type="button" data-step="patient">Usuario</button>
+    <button type="button" data-step="diabetesm">Diabetes:M</button>
     <button type="button" data-step="location">Ubicación</button>
     <button type="button" data-step="finish">Guardar</button>
   </nav>
@@ -29,6 +30,7 @@
       <div class="actions">
         <button type="button" id="openWifi">Cambiar red Wi-Fi</button>
         <button type="button" class="primary" id="openServices">LibreLinkUp, usuario y clima</button>
+        <button type="button" id="openDiabetesM">Cuenta Diabetes:M</button>
       </div>
     </section>
     <section id="wifi" class="step">
@@ -63,6 +65,15 @@
       <p class="eyebrow">CUENTA COMPARTIDA</p><h1>Elige el usuario</h1>
       <p>La pantalla nunca cambiará de persona automáticamente si hay varias conexiones.</p>
       <div id="patients" class="choices"><p class="hint">Inicia sesión en el paso anterior.</p></div>
+    </section>
+    <section id="diabetesm" class="step">
+      <p class="eyebrow">SINCRONIZACIÓN</p><h1>Cuenta Diabetes:M</h1>
+      <p>Sube automáticamente las lecturas de glucosa a tu diario de <strong>Diabetes:M</strong> cada vez que se reciban de LibreLinkUp.</p>
+      <label>Usuario o correo<input id="diabetesm_user" maxlength="160" autocomplete="username"></label>
+      <label>Contraseña<input id="diabetesm_password" type="password" maxlength="256" autocomplete="current-password"></label>
+      <label class="checkbox"><input id="diabetesm_enabled" type="checkbox"> Activar sincronización continua con Diabetes:M</label>
+      <p class="hint" id="diabetesmMessage">Si ya existe una clave guardada, déjala vacía para conservarla.</p>
+      <button type="button" class="primary" id="saveDiabetesMStep">Continuar a Ubicación</button>
     </section>
     <section id="location" class="step">
       <p class="eyebrow">OPCIONAL</p><h1>Tu ubicación</h1>

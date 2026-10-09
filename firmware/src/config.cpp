@@ -26,6 +26,7 @@ enum class Kind {
     RemoveWifi,
     Location,
     Patient,
+    DiabetesM,
     Full,
     Networks,
     Reset
@@ -77,6 +78,9 @@ void toJson(const Config &c, Doc &d) {
     d["latitude"] = c.latitude;
     d["longitude"] = c.longitude;
     d["location_set"] = c.locationSet;
+    d["diabetesm_user"] = c.diabetesmUser;
+    d["diabetesm_password"] = c.diabetesmPass;
+    d["diabetesm_enabled"] = c.diabetesmEnabled;
 }
 void fromJson(JsonVariantConst d, Config &c) {
     c.ssid = d["ssid"] | "";
@@ -92,6 +96,9 @@ void fromJson(JsonVariantConst d, Config &c) {
     c.latitude = d["latitude"] | 0.0f;
     c.longitude = d["longitude"] | 0.0f;
     c.locationSet = d["location_set"] | false;
+    c.diabetesmUser = d["diabetesm_user"] | "";
+    c.diabetesmPass = d["diabetesm_password"] | "";
+    c.diabetesmEnabled = d["diabetesm_enabled"] | false;
     c.extraWifiCount = 0;
     for (JsonObjectConst n : d["wifi_networks"].as<JsonArrayConst>()) {
         if (c.extraWifiCount == MAX_EXTRA_WIFI)
@@ -117,8 +124,7 @@ bool validRegion(const String &r) {
     return false;
 }
 bool validLocation(const Config &c) {
-    return (c.timezone == "Europe/Madrid" || c.timezone == "Atlantic/Canary" ||
-            c.timezone == "UTC") &&
+    return (!c.timezone.isEmpty() && c.timezone.length() <= 64) &&
            (!c.locationSet ||
             (!c.city.isEmpty() && c.city.length() <= 139 && std::isfinite(c.latitude) &&
              std::isfinite(c.longitude) && c.latitude >= -90 && c.latitude <= 90 &&
@@ -514,6 +520,16 @@ bool deviceQueueLibreUser(const ConnectionChoice &p, String &error) {
     }
     return submit(r, error);
 }
+bool deviceQueueDiabetesM(const String &user, const String &password, bool enabled, String &error) {
+    auto *r = new (std::nothrow) Request{};
+    if (r) {
+        r->kind = Kind::DiabetesM;
+        r->text = user;
+        r->password = password;
+        r->connect = enabled;
+    }
+    return submit(r, error);
+}
 SetupJob deviceMutationResult(String &error) {
     ResultLock lock;
     if (results.mutation == SetupJob::Failed)
@@ -644,6 +660,15 @@ bool deviceSaveLibreUser(const ConnectionChoice &p, String &error) {
     next.patientName = p.name;
     return persist(next, error);
 }
+bool deviceSaveDiabetesM(const String &user, const String &pass, bool enabled, String &error) {
+    Config next = configSnapshot();
+    next.diabetesmUser = user;
+    next.diabetesmUser.trim();
+    if (!pass.isEmpty())
+        next.diabetesmPass = pass;
+    next.diabetesmEnabled = enabled;
+    return persist(next, error);
+}
 bool configQueueFull(const Config &next, String &error, bool networksOnly) {
     auto *r = new (std::nothrow) Request{};
     if (r) {
@@ -711,6 +736,9 @@ bool configService() {
         break;
     case Kind::Patient:
         ok = deviceSaveLibreUser(r->patient, error);
+        break;
+    case Kind::DiabetesM:
+        ok = deviceSaveDiabetesM(r->text, r->password, r->connect, error);
         break;
     case Kind::Networks: {
         if (r->full.extraWifiCount > MAX_EXTRA_WIFI) {

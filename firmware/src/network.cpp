@@ -105,6 +105,7 @@ void task(void *) {
     publish();
 
     LibreClient libre;
+    DiabetesMClient diabetesm;
     uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0;
     uint32_t connectedAt = 0, disconnectedAt = 0, lastTlsRequest = 0, lastLibreRequest = 0,
              reconnectAt = 0, libreBlockedUntil = 0;
@@ -114,6 +115,8 @@ void task(void *) {
                                     config.libreRegion + "\n" + config.libreVersion);
     String locationKey = net::sha256(config.city + "\n" + String(config.latitude, 5) + "\n" +
                                      String(config.longitude, 5));
+    String diabetesmKey = net::sha256(config.diabetesmUser + "\n" + config.diabetesmPass + "\n" +
+                                      (config.diabetesmEnabled ? "1" : "0"));
     uint32_t knownRevision = configRevision.load(std::memory_order_acquire);
     int lastWifi = -1;
     size_t fallbackIndex = 0;
@@ -217,6 +220,16 @@ void task(void *) {
                 work->weatherError[0] = 0;
                 weatherDue = millis() + 3000;
                 publish();
+            }
+            const String currentDiabetesMKey =
+                net::sha256(config.diabetesmUser + "\n" + config.diabetesmPass + "\n" +
+                            (config.diabetesmEnabled ? "1" : "0"));
+            if (currentDiabetesMKey != diabetesmKey) {
+                diabetesmKey = currentDiabetesMKey;
+                diabetesm.resetSession();
+                if (work->currentValid && config.diabetesmEnabled) {
+                    glucoseDue = millis();
+                }
             }
         }
 
@@ -323,6 +336,10 @@ void task(void *) {
             publish();
             const uint32_t wait = libre.read(*work);
             work->glucoseRequestStartedMs = 0;
+            if (work->currentValid && config.diabetesmEnabled) {
+                String dmError;
+                diabetesm.uploadGlucose(work->current, config, dmError);
+            }
             publish();
             appDiagnosticStage("Esperando siguiente consulta");
             lastTlsRequest = millis();

@@ -17,6 +17,7 @@ struct Transfer {
     size_t used = 0, limit = kCapacity;
     uint32_t deadline = 0;
     bool failed = false;
+    String cookie;
 };
 bool safe(const String &s) {
     for (size_t i = 0; i < s.length(); ++i)
@@ -29,6 +30,18 @@ esp_err_t event(esp_http_client_event_t *e) {
     if (runtime::due(millis(), t->deadline)) {
         t->failed = true;
         return ESP_FAIL;
+    }
+    if (e->event_id == HTTP_EVENT_ON_HEADER && e->header_key && e->header_value) {
+        if (strcasecmp(e->header_key, "Set-Cookie") == 0) {
+            String c = e->header_value;
+            int semi = c.indexOf(';');
+            if (semi > 0)
+                c = c.substring(0, semi);
+            c.trim();
+            if (!t->cookie.isEmpty())
+                t->cookie += "; ";
+            t->cookie += c;
+        }
     }
     return ESP_OK;
 }
@@ -154,7 +167,12 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     }
     struct Cleanup {
         esp_http_client_handle_t h;
-        ~Cleanup() { esp_http_client_cleanup(h); }
+        ~Cleanup() {
+            if (h) {
+                esp_http_client_close(h);
+                esp_http_client_cleanup(h);
+            }
+        }
     } cleanup{client};
     esp_http_client_set_method(client,
                                strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
@@ -181,7 +199,9 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         const int err = esp_http_client_get_errno(client);
         Serial.printf("[HTTP] Reintentando tras fallo conexion %s a %s: result=%s (%d), errno=%d\n",
                       isHttps ? "HTTPS" : "HTTP", url.c_str(), esp_err_to_name(result), int(result), err);
+        esp_http_client_close(client);
         esp_http_client_cleanup(client);
+        cleanup.h = nullptr;
         vTaskDelay(pdMS_TO_TICKS(1500));
         t.deadline = millis() + 45000;
         t.failed = false;
@@ -228,6 +248,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     esp_http_client_set_timeout_ms(client, 25000);
     const int64_t declared = esp_http_client_fetch_headers(client);
     r.status = esp_http_client_get_status_code(client);
+    r.cookie = t.cookie;
     if (declared < 0) {
         const int err = esp_http_client_get_errno(client);
         Serial.printf("[HTTP] Timeout esperando cabeceras de %s: status=%d, errno=%d\n",
@@ -251,9 +272,26 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         }
         const size_t toRead = std::min<size_t>(4096, t.limit - t.used);
         const int n = esp_http_client_read(client, bodyBuffer + t.used, toRead);
-        if (n <= 0) {
-            // Fin de stream, socket cerrado o fin de chunks
+        if (n < 0) {
+            const int err = esp_http_client_get_errno(client);
+            if (err == 11 /* EAGAIN */) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
             break;
+        }
+        if (n == 0) {
+            if (esp_http_client_is_chunked_response(client)) {
+                if (esp_http_client_is_complete_data_received(client))
+                    break;
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            } else if (declared > 0 && int64_t(t.used) < declared) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            } else {
+                break;
+            }
         }
         t.used += n;
         if (esp_http_client_is_chunked_response(client) &&
@@ -304,6 +342,8 @@ Response request(const String &url, Doc &doc, const char *method, const String &
             filter.isNull() ? deserializeJson(doc, reader)
                             : deserializeJson(doc, reader, DeserializationOption::Filter(filter));
         if (error && r.status >= 200 && r.status < 300) {
+            Serial.printf("[HTTP] Error deserializando JSON de %s: %s (usados: %u bytes, declarados: %lld)\n",
+                          url.c_str(), error.c_str(), unsigned(t.used), declared);
             r.status = -3;
             r.error = "JSON no reconocido: " + String(error.c_str());
             return r;

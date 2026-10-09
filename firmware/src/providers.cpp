@@ -361,7 +361,7 @@ uint32_t LibreClient::read(AppState &state) {
     for (const char *key :
          {"FactoryTimestamp", "ValueInMgPerDl", "Value", "GlucoseUnits", "TrendArrow"})
         measurementFilter[key] = true;
-    Doc d(72 * 1024);
+    Doc d(128 * 1024);
     auto r = get("/llu/connections/" + net::encode(config.patientId) + "/graph", d, 512 * 1024,
                  filter.as<JsonVariantConst>());
     appDiagnosticStage("Libre: procesando datos");
@@ -465,4 +465,124 @@ void connectionCacheSave(const AppState &state) {
         p.end();
     }
     xSemaphoreGive(storageMutex);
+}
+
+void DiabetesMClient::resetSession() {
+    token = "";
+    cookies = "";
+    lastUploadedEpoch = 0;
+}
+
+bool DiabetesMClient::login(const Config &config, String &error) {
+    if (config.diabetesmUser.isEmpty() || config.diabetesmPass.isEmpty()) {
+        error = "Faltan credenciales de Diabetes:M";
+        return false;
+    }
+    Serial.println("[DIABETES-M] Conectando con Diabetes:M...");
+    Doc req(512);
+    req["username"] = config.diabetesmUser;
+    req["password"] = config.diabetesmPass;
+    req["device"] = "web";
+    req["client"] = "web";
+    String body;
+    serializeJson(req, body);
+
+    Doc res(32768);
+    net::Response r = net::request(
+        "https://analytics.diabetes-m.com/api/v1/user/authentication/login_v2",
+        res, "POST", body, {
+            {"Origin", "https://analytics.diabetes-m.com"},
+            {"Referer", "https://analytics.diabetes-m.com/"}
+        }, 16 * 1024);
+
+    if (r.status != 200) {
+        token = "";
+        cookies = "";
+        error = "Diabetes:M login: " + (r.error.isEmpty() ? String("HTTP ") + String(r.status) : r.error);
+        Serial.printf("[DIABETES-M] Error de login HTTP %d: %s\n", r.status, r.error.c_str());
+        return false;
+    }
+
+    token = res["token"].as<String>();
+    if (token.isEmpty() && res.containsKey("data")) {
+        token = res["data"]["token"].as<String>();
+    }
+    if (token.isEmpty()) {
+        error = "Diabetes:M: token ausente en respuesta";
+        return false;
+    }
+    cookies = r.cookie;
+    Serial.printf("[DIABETES-M] Sesión iniciada con éxito (cookies=%s)\n",
+                  cookies.isEmpty() ? "ninguna" : cookies.c_str());
+    return true;
+}
+
+bool DiabetesMClient::uploadGlucose(const gluco::Point &point, const Config &config, String &error) {
+    if (!config.diabetesmEnabled || config.diabetesmUser.isEmpty() || config.diabetesmPass.isEmpty())
+        return true;
+
+    if (point.epoch <= 0 || point.glucose <= 0)
+        return true;
+
+    if (point.epoch <= lastUploadedEpoch)
+        return true;
+
+    if (token.isEmpty()) {
+        if (!login(config, error))
+            return false;
+    }
+
+    Doc req(512);
+    req["entry_time"] = int64_t(point.epoch) * 1000LL;
+    double mmol = double(point.glucose) / 18.0182;
+    req["glucose"] = double(round(mmol * 100.0) / 100.0);
+    req["glucoseInCurrentUnit"] = int(point.glucose);
+    req["is_sensor"] = 1;
+    req["category"] = 0;
+    req["notes"] = "GlucoWaveshare";
+    const String tz = config.timezone.isEmpty() ? "Europe/Madrid" : config.timezone;
+    req["timezone"] = tz;
+    String body;
+    serializeJson(req, body);
+
+    std::initializer_list<net::Header> hdrs = {
+        {"Authorization", "Bearer " + token},
+        {"Origin", "https://analytics.diabetes-m.com"},
+        {"Referer", "https://analytics.diabetes-m.com/"},
+        {"Cookie", cookies}
+    };
+
+    Doc res(16384);
+    net::Response r = net::request(
+        "https://analytics.diabetes-m.com/api/v1/diary/entries/save_as_new",
+        res, "POST", body, hdrs, 16 * 1024);
+
+    if (r.status == 401) {
+        Serial.println("[DIABETES-M] Token caducado; reintentando login");
+        token = "";
+        cookies = "";
+        if (!login(config, error))
+            return false;
+        res.clear();
+        std::initializer_list<net::Header> retryHdrs = {
+            {"Authorization", "Bearer " + token},
+            {"Origin", "https://analytics.diabetes-m.com"},
+            {"Referer", "https://analytics.diabetes-m.com/"},
+            {"Cookie", cookies}
+        };
+        r = net::request(
+            "https://analytics.diabetes-m.com/api/v1/diary/entries/save_as_new",
+            res, "POST", body, retryHdrs, 16 * 1024);
+    }
+
+    if (r.status != 200) {
+        error = "Diabetes:M subida: " + (r.error.isEmpty() ? String("HTTP ") + String(r.status) : r.error);
+        Serial.printf("[DIABETES-M] Error al subir lectura (%d): %s\n", r.status, r.error.c_str());
+        return false;
+    }
+
+    lastUploadedEpoch = point.epoch;
+    Serial.printf("[DIABETES-M] Lectura sincronizada correctamente: %d mg/dL (%.2f mmol/L) [%s]\n",
+                  int(point.glucose), mmol, tz.c_str());
+    return true;
 }

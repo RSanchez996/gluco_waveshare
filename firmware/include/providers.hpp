@@ -20,3 +20,14 @@ class LibreClient {
 };
 void connectionCacheLoad(AppState &state);
 void connectionCacheSave(const AppState &state);
+class DiabetesMClient {
+  public:
+    bool uploadGlucose(const gluco::Point &point, const Config &config, String &error);
+    void resetSession();
+
+  private:
+    String token;
+    String cookies;
+    int64_t lastUploadedEpoch = 0;
+    bool login(const Config &config, String &error);
+};

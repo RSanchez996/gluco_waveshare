@@ -12,7 +12,7 @@ constexpr unsigned kPortalStack = 8192;
 constexpr int kWidth = 800, kHeight = 480;
 constexpr int kBounceLines = 20, kDrawLines = 12;
 constexpr unsigned kPixelClock = 12000000;
-constexpr int kGraphY = 160, kGraphHeight = 312;
+constexpr int kGraphY = 132, kGraphHeight = 340;
 static_assert((kWidth * kHeight) % (kWidth * kBounceLines) == 0);
 static_assert(kHeight / kBounceLines % 2 == 0);
 static_assert(kGraphY + kGraphHeight < 480);

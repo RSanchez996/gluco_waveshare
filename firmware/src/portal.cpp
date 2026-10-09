@@ -56,7 +56,7 @@ bool allowed(httpd_req_t *req, bool mutation = false) {
         char token[40]{};
         if (httpd_req_get_hdr_value_str(req, "X-Setup-Token", token, sizeof(token)) != ESP_OK ||
             strcmp(token, csrf) != 0) {
-            error(req, 403, "Formulario caducado; vuelve a escanear el QR");
+            error(req, 403, "Formulario caducado; vuelve a cargar la página");
             return false;
         }
     }
@@ -132,6 +132,9 @@ esp_err_t get(httpd_req_t *req) {
         d["has_libre_password"] = !c.librePass.isEmpty();
         d["libre_region"] = c.libreRegion;
         d["libre_version"] = c.libreVersion;
+        d["diabetesm_user"] = c.diabetesmUser;
+        d["has_diabetesm_password"] = !c.diabetesmPass.isEmpty();
+        d["diabetesm_enabled"] = c.diabetesmEnabled;
         d["patient_id"] = c.patientId;
         d["patient_name"] = c.patientName;
         d["city"] = c.city;
@@ -273,7 +276,8 @@ esp_err_t post(httpd_req_t *req) {
         next.libreUser = d["libre_user"] | next.libreUser;
         next.libreRegion = d["libre_region"] | next.libreRegion;
         next.libreVersion = d["libre_version"] | next.libreVersion;
-        const String wifi = d["wifi_password"] | "", libre = d["libre_password"] | "";
+        const String wifi = d["wifi_password"] | "", libre = d["libre_password"] | "",
+                     diabetesm = d["diabetesm_password"] | "";
         const Config old = configSnapshot();
         if (!wifi.isEmpty())
             next.wifiPass = wifi;
@@ -283,6 +287,15 @@ esp_err_t post(httpd_req_t *req) {
             next.librePass = libre;
         else if (next.libreUser != old.libreUser || next.libreRegion != old.libreRegion)
             next.librePass = "";
+        if (d.containsKey("diabetesm_user"))
+            next.diabetesmUser = d["diabetesm_user"] | next.diabetesmUser;
+        next.diabetesmUser.trim();
+        if (!diabetesm.isEmpty())
+            next.diabetesmPass = diabetesm;
+        else if (next.diabetesmUser != old.diabetesmUser)
+            next.diabetesmPass = "";
+        if (d.containsKey("diabetesm_enabled"))
+            next.diabetesmEnabled = d["diabetesm_enabled"].as<bool>();
         next.patientId = d["patient_id"] | "";
         next.patientName = d["patient_name"] | "";
         next.city = d["city"] | "";
@@ -314,6 +327,11 @@ void stopServer() {
     }
     dns.stop();
 }
+esp_err_t favicon(httpd_req_t *req) {
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, nullptr, 0);
+    return ESP_OK;
+}
 esp_err_t http404Handler(httpd_req_t *req, httpd_err_code_t err) {
     if (mode.load() == PortalMode::WifiAccessPoint && req->method == HTTP_GET) {
         httpd_resp_set_status(req, "302 Found");
@@ -322,7 +340,7 @@ esp_err_t http404Handler(httpd_req_t *req, httpd_err_code_t err) {
         return ESP_OK;
     }
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
-    return ESP_FAIL;
+    return ESP_OK;
 }
 void startServer() {
     if (server)
@@ -331,16 +349,18 @@ void startServer() {
     c.core_id = runtime::kDataCore;
     c.task_priority = runtime::kPortalPriority;
     c.stack_size = runtime::kPortalStack;
-    c.max_uri_handlers = 24;
-    c.max_open_sockets = 3;
+    c.max_uri_handlers = 32;
+    c.max_open_sockets = 6;
     c.lru_purge_enable = true;
-    c.recv_wait_timeout = 2;
-    c.send_wait_timeout = 2;
-    if (httpd_start(&server, &c) != ESP_OK) {
-        wanted.store(false);
-        mode.store(PortalMode::Off);
+    c.recv_wait_timeout = 10;
+    c.send_wait_timeout = 10;
+    const esp_err_t err = httpd_start(&server, &c);
+    if (err != ESP_OK) {
+        Serial.printf("[PORTAL] Error iniciando servidor HTTP: %d (%s)\n", err, esp_err_to_name(err));
         return;
     }
+    Serial.printf("[PORTAL] Servidor HTTP activo en puerto %d (IP: %s)\n",
+                  c.server_port, WiFi.localIP().toString().c_str());
     for (const char *url : {"/", "/index.html", "/app.js", "/style.css"}) {
         httpd_uri_t route{};
         route.uri = url;
@@ -348,6 +368,11 @@ void startServer() {
         route.handler = asset;
         ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     }
+    httpd_uri_t favRoute{};
+    favRoute.uri = "/favicon.ico";
+    favRoute.method = HTTP_GET;
+    favRoute.handler = favicon;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &favRoute));
     for (const char *url : {"/api/config", "/api/diagnostics", "/api/wifi/scan/status",
                             "/api/libre/status", "/api/geocode/status", "/api/mutation/status"}) {
         httpd_uri_t route{};
@@ -386,17 +411,22 @@ void accessPoint() {
 } // namespace
 void portalStart() {
     wanted.store(true);
+    lastAccess.store(millis());
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+        mode.store(PortalMode::LocalNetwork);
+    }
     displayRequestWake();
 }
 void portalStop() { wanted.store(false); }
-bool portalActive() { return wanted.load() || mode.load() != PortalMode::Off; }
+bool portalActive() { return wanted.load() || mode.load() == PortalMode::WifiAccessPoint; }
 PortalMode portalMode() { return mode.load(); }
 String portalSsid() { return apName; }
 String portalPassword() { return apPass; }
 String portalUrl() {
-    return mode.load() == PortalMode::LocalNetwork
-               ? String("http://") + WiFi.localIP().toString() + "/"
-               : "http://192.168.4.1/";
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+        return String("http://") + WiFi.localIP().toString() + "/";
+    }
+    return "http://192.168.4.1/";
 }
 void portalRuntimeStart() {
     snprintf(apName, sizeof(apName), "GlucoWave-%04X", unsigned(ESP.getEfuseMac() & 0xffff));
@@ -409,8 +439,10 @@ void portalLoop() {
         return; // never alter radio during TLS or a scan
     const auto current = mode.load();
     const uint32_t now = millis();
+    const Config c = configSnapshot();
+
     if (!wanted.load()) {
-        if (current != PortalMode::Off) {
+        if (current != PortalMode::Off || server != nullptr) {
             stopServer();
             if (current == PortalMode::WifiAccessPoint) {
                 WiFi.softAPdisconnect(true);
@@ -426,10 +458,11 @@ void portalLoop() {
             afterSave.store(0);
             transitionAt = 0;
             mode.store(PortalMode::Off);
+            Serial.println("[PORTAL] Servidor HTTP detenido (portal inactivo)");
         }
         return;
     }
-    const Config c = configSnapshot();
+
     if (current == PortalMode::Off) {
         if (c.ssid.isEmpty())
             accessPoint();
@@ -440,6 +473,18 @@ void portalLoop() {
             waiting(c);
         return;
     }
+
+    if (current == PortalMode::LocalNetwork) {
+        if (WiFi.status() != WL_CONNECTED) {
+            stopServer();
+            waiting(c);
+            return;
+        }
+        if (!server) {
+            startServer();
+        }
+    }
+
     const int saved = afterSave.load();
     if (saved) {
         String message;
@@ -462,6 +507,7 @@ void portalLoop() {
             return;
         }
     }
+
     if (current == PortalMode::WaitingForWifi) {
         if (WiFi.status() == WL_CONNECTED) {
             mode.store(PortalMode::LocalNetwork);
@@ -470,9 +516,11 @@ void portalLoop() {
             accessPoint();
         return;
     }
+
     if (current == PortalMode::WifiAccessPoint)
         dns.processNextRequest();
-    if (now - lastAccess.load() > 600000) {
+
+    if (wanted.load() && (now - lastAccess.load() > 600000)) {
         wanted.store(false);
         uiRequestHome();
     }

@@ -99,6 +99,8 @@ function step(id){
 document.querySelectorAll("nav button").forEach(x=>x.addEventListener("click",()=>step(x.dataset.step)));
 $("openWifi").addEventListener("click",()=>step("wifi"));
 $("openServices").addEventListener("click",()=>step("libre"));
+$("openDiabetesM").addEventListener("click",()=>step("diabetesm"));
+$("saveDiabetesMStep").addEventListener("click",()=>step("location"));
 
 const credentials=()=>({user:$("libre_user").value.trim(),password:$("libre_password").value,region:$("libre_region").value,version:$("libre_version").value.trim()});
 
@@ -127,7 +129,7 @@ $("loginLibre").addEventListener("click",async()=>{
     for(const p of r.patients){
       const b=document.createElement("button");b.type="button";b.className="choice";b.innerHTML="<strong></strong><small></small>";
       b.querySelector("strong").textContent=p.name;b.querySelector("small").textContent=p.id;
-      b.addEventListener("click",()=>{document.querySelectorAll("#patients .choice").forEach(x=>x.classList.remove("selected"));b.classList.add("selected");selected=p;message(`Usuario seleccionado: ${p.name}`)});
+      b.addEventListener("click",()=>{document.querySelectorAll("#patients .choice").forEach(x=>x.classList.remove("selected"));b.classList.add("selected");selected=p;message(`Usuario seleccionado: ${p.name}`);step("diabetesm");});
       $("patients").append(b);
     }
     $("libreMessage").textContent=`Sesión correcta: ${r.patients.length} usuario(s) compartido(s).`;message("Sesión correcta. Elige la persona que mostrará la pantalla.");step("patient");
@@ -156,10 +158,11 @@ $("searchCity").addEventListener("click",async()=>{
   }catch(e){$("locationMessage").textContent=e.message;message(e.message,true)}finally{busy=false;$("searchCity").disabled=false;}
 });
 
-function payload(){return{ssid:$("ssid").value.trim(),wifi_password:$("wifi_password").value,libre_user:$("libre_user").value.trim(),libre_password:$("libre_password").value,libre_region:$("libre_region").value,libre_version:$("libre_version").value.trim(),patient_id:selected.id,patient_name:selected.name,city:location?.name||$("city").value,latitude:Number(location?.latitude??$("latitude").value),longitude:Number(location?.longitude??$("longitude").value),timezone:location?.timezone||$("timezone").value,location_set:!!(location||$("city").value)};}
+function payload(){return{ssid:$("ssid").value.trim(),wifi_password:$("wifi_password").value,libre_user:$("libre_user").value.trim(),libre_password:$("libre_password").value,libre_region:$("libre_region").value,libre_version:$("libre_version").value.trim(),patient_id:selected.id,patient_name:selected.name,diabetesm_user:$("diabetesm_user").value.trim(),diabetesm_password:$("diabetesm_password").value,diabetesm_enabled:$("diabetesm_enabled").checked,city:location?.name||$("city").value,latitude:Number(location?.latitude??$("latitude").value),longitude:Number(location?.longitude??$("longitude").value),timezone:location?.timezone||$("timezone").value,location_set:!!(location||$("city").value)};}
 function summary(){
   $("summary").innerHTML="";
-  const rows=[["Wi-Fi",$("ssid").value||"Pendiente"],["Cuenta",$("libre_user").value||"Pendiente"],["Usuario",selected.name||"Pendiente"],["Ubicación",location?.name||$("city").value||"Pendiente"]];
+  const dmStatus=$("diabetesm_enabled")?.checked?($("diabetesm_user").value?`Activo (${$("diabetesm_user").value})`:"Activo"):"Desactivado";
+  const rows=[["Wi-Fi",$("ssid").value||"Pendiente"],["Cuenta",$("libre_user").value||"Pendiente"],["Usuario",selected.name||"Pendiente"],["Diabetes:M",dmStatus],["Ubicación",location?.name||$("city").value||"Pendiente"]];
   for(const [k,v] of rows){const d=document.createElement("div"),b=document.createElement("b");b.textContent=k;d.append(b,document.createTextNode(v));$("summary").append(d)}
 }
 
@@ -192,13 +195,15 @@ async function start(){
     if(cfg.settings_state==="invalid")message("Hay ajustes en NVS, pero no se pudieron leer. Conserva una copia de NVS antes de volver a guardar.",true);
     else if(cfg.settings_state==="unavailable")message("No se pudo abrir la memoria de ajustes NVS. Evita guardar de nuevo hasta comprobar la placa.",true);
     else if(cfg.settings_state==="missing")message("No aparecen ajustes guardados en NVS. Comprueba si tienes una copia anterior antes de configurar de nuevo.",true);
-    for(const id of ["ssid","libre_user","libre_region","libre_version","city","latitude","longitude","timezone"])if($(id))$(id).value=cfg[id]??"";
+    for(const id of ["ssid","libre_user","libre_region","libre_version","diabetesm_user","city","latitude","longitude","timezone"])if($(id))$(id).value=cfg[id]??"";
     if(cfg.has_wifi_password)$("wifi_password").placeholder="Guardada; deja vacío para conservar";
     if(cfg.portal_mode!=="wifi"){
       $("extraWifiSection").hidden=false;
       for(const n of cfg.wifi_networks||[])wifiNetworkRow(n.ssid,n.has_password);
     }
     if(cfg.has_libre_password)$("libre_password").placeholder="Guardada; deja vacío para conservar";
+    if(cfg.has_diabetesm_password)$("diabetesm_password").placeholder="Guardada; deja vacío para conservar";
+    if($("diabetesm_enabled"))$("diabetesm_enabled").checked=!!cfg.diabetesm_enabled;
     if(cfg.patient_id)selected={id:cfg.patient_id,name:cfg.patient_name||cfg.patient_id};
     if(cfg.location_set)location={name:cfg.city,latitude:cfg.latitude,longitude:cfg.longitude,timezone:cfg.timezone};
     summary();
@@ -206,7 +211,7 @@ async function start(){
       $("state").textContent="Paso 1 de 2";$("notice").textContent="Configura solamente el Wi-Fi. Después aparecerá un segundo QR en la pantalla.";
       document.querySelectorAll("nav button").forEach(x=>x.hidden=x.dataset.step!=="wifi");step("wifi");
     }else{
-      $("state").textContent=`En red local · ${cfg.ip}`;$("notice").textContent="Configura Wi-Fi, LibreLinkUp y, si quieres, tu localidad para el clima. El portal se cerrará al guardar.";step("start");
+      $("state").textContent=`En red local · ${cfg.ip}`;$("notice").textContent="Configura Wi-Fi, LibreLinkUp, Diabetes:M y el clima. Se cerrará al guardar o pulsar Cerrar.";step("start");
     }
   }catch(e){message(e.message,true);document.querySelectorAll("button").forEach(x=>x.disabled=true)}
 }
