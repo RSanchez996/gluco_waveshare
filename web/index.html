@@ -69,9 +69,18 @@
     <section id="diabetesm" class="step">
       <p class="eyebrow">SINCRONIZACIÓN</p><h1>Cuenta Diabetes:M</h1>
       <p>Sube automáticamente las lecturas de glucosa a tu diario de <strong>Diabetes:M</strong> cada vez que se reciban de LibreLinkUp.</p>
+      <label>Vincular a usuario LibreLinkUp
+        <select id="diabetesm_patient"></select>
+      </label>
       <label>Usuario o correo<input id="diabetesm_user" maxlength="160" autocomplete="username"></label>
       <label>Contraseña<input id="diabetesm_password" type="password" maxlength="256" autocomplete="current-password"></label>
       <label class="checkbox"><input id="diabetesm_enabled" type="checkbox"> Activar sincronización continua con Diabetes:M</label>
+      <label>Frecuencia y procesado
+        <select id="diabetesm_mode">
+          <option value="smoothed">Cada 2 min · Suavizado inteligente (Recomendado para calculador de bolo)</option>
+          <option value="filtered">Cada 15 min · Filtrado LibreView (Solo curva consolidada)</option>
+        </select>
+      </label>
       <p class="hint" id="diabetesmMessage">Si ya existe una clave guardada, déjala vacía para conservarla.</p>
       <button type="button" class="primary" id="saveDiabetesMStep">Continuar a Ubicación</button>
     </section>

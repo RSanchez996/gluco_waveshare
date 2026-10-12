@@ -246,7 +246,14 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         return r;
     }
     esp_http_client_set_timeout_ms(client, 25000);
-    const int64_t declared = esp_http_client_fetch_headers(client);
+    int64_t declared = esp_http_client_fetch_headers(client);
+    if (declared == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
+        const uint32_t fetchDeadline = millis() + 4000;
+        while (declared == -28679 && !runtime::due(millis(), fetchDeadline)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            declared = esp_http_client_fetch_headers(client);
+        }
+    }
     r.status = esp_http_client_get_status_code(client);
     r.cookie = t.cookie;
     if (declared < 0) {
@@ -261,6 +268,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         return r;
     }
     t.used = 0;
+    bool readError = false;
     while (t.used < t.limit) {
         if (declared > 0 && int64_t(t.used) >= declared)
             break;
@@ -274,21 +282,27 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         const int n = esp_http_client_read(client, bodyBuffer + t.used, toRead);
         if (n < 0) {
             const int err = esp_http_client_get_errno(client);
-            if (err == 11 /* EAGAIN */) {
+            if (err == 11 /* EAGAIN */ || n == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
+            Serial.printf("[HTTP] Error leyendo body de %s: n=%d, errno=%d\n", url.c_str(), n, err);
+            readError = true;
             break;
         }
         if (n == 0) {
             if (esp_http_client_is_chunked_response(client)) {
                 if (esp_http_client_is_complete_data_received(client))
                     break;
-                vTaskDelay(pdMS_TO_TICKS(50));
-                continue;
+                Serial.printf("[HTTP] Conexión cerrada antes de completar chunked en %s (usados: %u bytes)\n",
+                              url.c_str(), unsigned(t.used));
+                readError = true;
+                break;
             } else if (declared > 0 && int64_t(t.used) < declared) {
-                vTaskDelay(pdMS_TO_TICKS(50));
-                continue;
+                Serial.printf("[HTTP] Conexión cerrada antes de recibir todo el body en %s (%u de %lld bytes)\n",
+                              url.c_str(), unsigned(t.used), declared);
+                readError = true;
+                break;
             } else {
                 break;
             }
@@ -298,9 +312,17 @@ Response request(const String &url, Doc &doc, const char *method, const String &
             esp_http_client_is_complete_data_received(client))
             break;
     }
-    if (t.failed) {
+    if (readError || t.failed) {
         r.status = -2;
-        r.error = "Tiempo de espera HTTP agotado";
+        r.error = "Conexión HTTPS interrumpida o incompleta";
+        return r;
+    }
+    if (esp_http_client_is_chunked_response(client) &&
+        !esp_http_client_is_complete_data_received(client)) {
+        Serial.printf("[HTTP] Respuesta chunked incompleta de %s: %u bytes\n",
+                      url.c_str(), unsigned(t.used));
+        r.status = -2;
+        r.error = "Respuesta HTTPS incompleta";
         return r;
     }
     if (declared > 0 && int64_t(t.used) < declared) {

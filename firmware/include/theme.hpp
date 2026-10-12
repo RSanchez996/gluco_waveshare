@@ -7,6 +7,7 @@ constexpr uint32_t Button = 0x193440;
 constexpr uint32_t Ink = 0xF5FAFD;
 constexpr uint32_t Muted = 0xAABFC8;
 constexpr uint32_t Green = 0x40E88A;
+constexpr uint32_t GreenBold = 0x00E676;
 constexpr uint32_t Red = 0xFF5267;
 constexpr uint32_t Yellow = 0xFFD552;
 constexpr uint32_t Orange = 0xFF963D;

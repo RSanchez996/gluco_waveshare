@@ -35,6 +35,25 @@ struct Config {
     bool locationSet = false;
     String diabetesmUser, diabetesmPass;
     bool diabetesmEnabled = false;
+    bool diabetesmSyncFiltered = false;
+};
+struct DiabetesMLink {
+    char patientId[100]{};
+    char patientName[100]{};
+    char user[160]{};
+    char pass[256]{};
+    bool enabled = false;
+    bool syncFiltered = false;
+};
+struct DailySummary {
+    float tirPercent = 0.0f;
+    float lowPercent = 0.0f;
+    float highPercent = 0.0f;
+    int averageGlucose = 0;
+    int minGlucose = 0;
+    int maxGlucose = 0;
+    size_t totalReadings = 0;
+    bool valid = false;
 };
 struct ConnectionChoice {
     char id[100]{};
@@ -81,6 +100,9 @@ struct AppState {
     WeatherDay days[4]{};
     size_t dayCount = 0;
     int64_t weatherFetched = 0;
+    DailySummary dailySummary{};
+    bool activePatientDmLinked = false;
+    char activePatientDmUser[160]{};
 };
 // No shared mutable Strings: readers own a copy, the data worker owns writes.
 Config configSnapshot();
@@ -131,7 +153,10 @@ bool deviceQueueWifi(const String &ssid, const String &password, bool connectNow
 bool deviceQueueRemoveWifi(const String &ssid, String &error);
 bool deviceQueueLocation(const LocationChoice &choice, String &error);
 bool deviceQueueLibreUser(const ConnectionChoice &choice, String &error);
-bool deviceQueueDiabetesM(const String &user, const String &password, bool enabled, String &error);
+bool deviceQueueDiabetesM(const String &user, const String &password, bool enabled, String &error,
+                          const String &patientId = "", bool syncFiltered = false);
+bool deviceSaveDiabetesM(const String &user, const String &pass, bool enabled, String &error,
+                         const String &patientId = "", bool syncFiltered = false);
 SetupJob deviceMutationResult(String &error);
 void displayInit();
 void displayWake();

@@ -1,5 +1,7 @@
 #include "app.hpp"
+#include "diabetesm_links.hpp"
 #include "fonts.hpp"
+#include "history_store.hpp"
 #include "runtime.hpp"
 #include "theme.hpp"
 #include "weather_icons.hpp"
@@ -29,16 +31,17 @@ enum class PendingPage {
 PendingPage pendingPage = PendingPage::None;
 lv_obj_t *timeLabel = nullptr, *dateLabel = nullptr, *weatherLabel = nullptr,
          *weatherSummary = nullptr, *homeIcon = nullptr, *glucoseLabel = nullptr,
-         *detailLabel = nullptr, *graph = nullptr, *arrow = nullptr;
+         *detailLabel = nullptr, *graph = nullptr, *arrow = nullptr, *tirHomeLabel = nullptr;
 lv_obj_t *glucosePanel = nullptr, *glucoseAccent = nullptr;
 lv_obj_t *clockBig = nullptr, *clockDate = nullptr, *clockWeather = nullptr,
          *clockSummary = nullptr, *clockIcon = nullptr, *hoursBox = nullptr, *hoursTab = nullptr,
-         *daysTab = nullptr, *setupInfo = nullptr, *setupQr = nullptr;
+         *daysTab = nullptr, *summaryTab = nullptr, *setupInfo = nullptr, *setupQr = nullptr;
 lv_obj_t *keyboard = nullptr, *keyboardToggle = nullptr, *keyboardLastInput = nullptr,
          *wifiList = nullptr, *wifiSaved = nullptr, *wifiSsid = nullptr, *wifiPass = nullptr,
          *cityInput = nullptr, *locationList = nullptr, *loginUser = nullptr, *loginPass = nullptr,
          *loginRegion = nullptr, *loginList = nullptr, *diabetesmUser = nullptr,
-         *diabetesmPass = nullptr, *diabetesmSwitch = nullptr, *setupStatus = nullptr;
+         *diabetesmPass = nullptr, *diabetesmSwitch = nullptr, *diabetesmPatient = nullptr,
+         *diabetesmMode = nullptr, *setupStatus = nullptr;
 WifiScanEntry scanEntries[16]{};
 size_t scanCount = 0;
 LocationChoice locationEntries[8]{};
@@ -62,12 +65,12 @@ enum class SetupAction {
 };
 SetupAction setupAction = SetupAction::None;
 SetupAction mutationAwaiting = SetupAction::None;
-String actionSsid, actionPassword, actionUser, actionRegion;
-bool actionConnect = false;
+String actionSsid, actionPassword, actionUser, actionRegion, actionTargetPatientId;
+bool actionConnect = false, actionSyncFiltered = false;
 size_t actionIndex = 0;
 int64_t selectedGraphEpoch = 0;
 weathericons::Icon homeGlyph{}, clockGlyph{}, hourGlyphs[6]{}, dayGlyphs[4]{};
-enum class ForecastView { Hours, Days };
+enum class ForecastView { Hours, Days, Summary };
 ForecastView forecastView = ForecastView::Hours;
 int64_t renderedWeather = -1, renderedGlucose = -1, renderedMinute = -1, renderedGraphBucket = -1,
         renderedLatestEpoch = -1;
@@ -506,6 +509,10 @@ void requestDays(lv_event_t *) {
     forecastView = ForecastView::Days;
     updateForecast();
 }
+void requestSummary(lv_event_t *) {
+    forecastView = ForecastView::Summary;
+    updateForecast();
+}
 void buildHome() {
     portalStop();
     configUiActive.store(false, std::memory_order_release);
@@ -588,7 +595,17 @@ void buildHome() {
     lv_obj_add_event_cb(arrow, drawArrow, LV_EVENT_DRAW_MAIN, nullptr);
 
     detailLabel =
-        label(glucosePanel, 28, 90, 330, "Sin lectura", &fonts::montserrat16, theme::Muted);
+        label(glucosePanel, 28, 90, 180, "Sin lectura", &fonts::montserrat16, theme::Muted);
+
+    tirHomeLabel =
+        label(glucosePanel, 210, 90, 120, "TIR --%", &fonts::montserrat14, theme::Muted);
+    lv_obj_set_style_text_align(tirHomeLabel, LV_TEXT_ALIGN_CENTER, 0);
+    if (snapshot.dailySummary.valid && snapshot.dailySummary.totalReadings > 0) {
+        char tirBuf[32];
+        snprintf(tirBuf, sizeof(tirBuf), "TIR %.0f%%", snapshot.dailySummary.tirPercent);
+        lv_label_set_text(tirHomeLabel, tirBuf);
+        lv_obj_set_style_text_color(tirHomeLabel, c(tirColor(snapshot.dailySummary.tirPercent)), 0);
+    }
 
     graph = lv_obj_create(lv_scr_act());
     lv_obj_set_pos(graph, 18, runtime::kGraphY);
@@ -654,10 +671,11 @@ void buildClock() {
     lv_obj_clear_flag(hoursBox, LV_OBJ_FLAG_SCROLLABLE);
     label(hoursBox, 35, 95, 690, "Esperando pronóstico...", &fonts::montserrat20, theme::Muted);
 
-    button(lv_scr_act(), 18, 418, 210, "Glucosa", homePage);
-    hoursTab = button(lv_scr_act(), 238, 418, 210, "Por horas", requestHours);
-    daysTab = button(lv_scr_act(), 458, 418, 210, "4 días", requestDays);
-    lv_obj_t *clockGear = button(lv_scr_act(), 678, 418, 104, "", settings);
+    button(lv_scr_act(), 18, 418, 145, "Glucosa", homePage);
+    hoursTab = button(lv_scr_act(), 171, 418, 145, "Por horas", requestHours);
+    daysTab = button(lv_scr_act(), 324, 418, 145, "4 días", requestDays);
+    summaryTab = button(lv_scr_act(), 477, 418, 185, "Resumen día", requestSummary);
+    lv_obj_t *clockGear = button(lv_scr_act(), 670, 418, 112, "", settings);
     lv_obj_add_event_cb(clockGear, drawSettingsIcon, LV_EVENT_DRAW_MAIN, nullptr);
 }
 void selectUser(lv_event_t *event) {
@@ -681,6 +699,14 @@ void buildUsers() {
     label(lv_scr_act(), 28, 20, 600, "Elegir usuario de glucosa", &fonts::montserrat28);
     String current = "Usuario actual: " +
                      (config.patientName.isEmpty() ? String("ninguno") : config.patientName);
+    if (!config.patientId.isEmpty()) {
+        char activeDm[64]{};
+        if (dmLinkHasAccount(config.patientId.c_str(), activeDm, sizeof(activeDm))) {
+            current += "  (DM: " + String(activeDm) + ")";
+        } else {
+            current += "  (Sin cuenta Diabetes:M)";
+        }
+    }
     label(lv_scr_act(), 30, 58, 700, current.c_str(), &fonts::montserrat16, theme::Muted);
     if (!snapshot.connectionCount) {
         const char *message = snapshot.connectionsError[0] ? snapshot.connectionsError
@@ -699,7 +725,11 @@ void buildUsers() {
         lv_obj_set_style_pad_all(list, 10, 0);
         lv_obj_set_scroll_dir(list, LV_DIR_VER);
         for (size_t i = 0; i < snapshot.connectionCount; ++i) {
-            auto *b = button(list, 12, 12 + int(i) * 62, 690, snapshot.connections[i].name,
+            char dmU[64]{};
+            const bool hasDm = dmLinkHasAccount(snapshot.connections[i].id, dmU, sizeof(dmU));
+            String itemText = String(snapshot.connections[i].name) +
+                              (hasDm ? "   [DM Conectado]" : "   [Sin DM]");
+            auto *b = button(list, 12, 12 + int(i) * 62, 690, itemText.c_str(),
                              selectUser, reinterpret_cast<void *>(uintptr_t(i)));
             if (config.patientId == snapshot.connections[i].id)
                 lv_obj_set_style_bg_color(b, c(theme::Green), 0);
@@ -772,7 +802,7 @@ void setupHeader(const char *title, bool root = false) {
     configUiActive.store(true, std::memory_order_release);
     keyboard = keyboardToggle = keyboardLastInput = wifiList = wifiSaved = wifiSsid = wifiPass =
         cityInput = locationList = loginUser = loginPass = loginRegion = loginList = diabetesmUser =
-            diabetesmPass = diabetesmSwitch = setupStatus = nullptr;
+            diabetesmPass = diabetesmSwitch = diabetesmPatient = diabetesmMode = setupStatus = nullptr;
     lv_obj_clean(lv_scr_act());
     base(lv_scr_act());
     label(lv_scr_act(), 26, 16, 680, title, &fonts::montserrat28);
@@ -1511,24 +1541,91 @@ void saveDiabetesM(lv_event_t *) {
     actionUser = lv_textarea_get_text(diabetesmUser);
     actionPassword = lv_textarea_get_text(diabetesmPass);
     actionConnect = diabetesmSwitch && lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED);
+    actionSyncFiltered = diabetesmMode && lv_dropdown_get_selected(diabetesmMode) == 1;
+    actionTargetPatientId = config.patientId;
+    if (diabetesmPatient && snapshot.connectionCount > 0) {
+        const uint16_t idx = lv_dropdown_get_selected(diabetesmPatient);
+        if (idx < snapshot.connectionCount) {
+            actionTargetPatientId = snapshot.connections[idx].id;
+        }
+    }
     hideKeyboard(nullptr);
     setupAction = SetupAction::SaveDiabetesM;
 }
 void buildDiabetesM() {
     page = Page::DiabetesM;
     setupHeader("Cuenta Diabetes:M");
-    label(lv_scr_act(), 28, 65, 700, "Sube automáticamente las lecturas de glucosa a Diabetes:M",
+    label(lv_scr_act(), 28, 70, 744, "Sube automáticamente las lecturas de glucosa a Diabetes:M",
           &fonts::montserrat14, theme::Muted);
 
-    label(lv_scr_act(), 28, 100, 500, "Usuario / Correo de Diabetes:M", &fonts::montserrat14, theme::Muted);
-    diabetesmUser = setupInput(28, 122, 744, config.diabetesmUser.c_str(), 160);
+    auto styleDropdown = [](lv_obj_t *d) {
+        lv_obj_set_style_bg_color(d, c(theme::Card), 0);
+        lv_obj_set_style_border_color(d, c(theme::Grid), 0);
+        lv_obj_set_style_border_width(d, 1, 0);
+        lv_obj_set_style_radius(d, 12, 0);
+        lv_obj_set_style_text_font(d, &fonts::montserrat16, 0);
+        lv_obj_set_style_text_color(d, c(theme::Ink), 0);
+        lv_obj_set_style_text_font(d, &lv_font_montserrat_14, LV_PART_INDICATOR);
+        lv_obj_set_style_text_color(d, c(theme::Ink), LV_PART_INDICATOR);
+        lv_obj_t *list = lv_dropdown_get_list(d);
+        lv_obj_set_style_bg_color(list, c(theme::Card), 0);
+        lv_obj_set_style_border_color(list, c(theme::Grid), 0);
+        lv_obj_set_style_border_width(list, 1, 0);
+        lv_obj_set_style_radius(list, 12, 0);
+        lv_obj_set_style_text_font(list, &fonts::montserrat16, 0);
+        lv_obj_set_style_text_color(list, c(theme::Ink), 0);
+        constexpr lv_style_selector_t selChecked =
+            lv_style_selector_t(LV_PART_SELECTED) | lv_style_selector_t(LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(list, c(theme::Button), selChecked);
+        lv_obj_set_style_text_color(list, c(theme::Ink), selChecked);
+    };
 
-    label(lv_scr_act(), 28, 180, 500, "Contraseña (vacía para conservar la actual)", &fonts::montserrat14, theme::Muted);
-    diabetesmPass = setupInput(28, 202, 744, "", 256, true);
+    label(lv_scr_act(), 28, 94, 360, "Vincular a usuario LibreLinkUp", &fonts::montserrat14, theme::Muted);
+    diabetesmPatient = lv_dropdown_create(lv_scr_act());
+    lv_obj_set_pos(diabetesmPatient, 28, 114);
+    lv_obj_set_size(diabetesmPatient, 360, 44);
+    String options;
+    int selectedIndex = 0;
+    if (snapshot.connectionCount > 0) {
+        for (size_t i = 0; i < snapshot.connectionCount; ++i) {
+            if (i > 0)
+                options += "\n";
+            char u[64]{};
+            const bool linked = dmLinkHasAccount(snapshot.connections[i].id, u, sizeof(u));
+            options += snapshot.connections[i].name;
+            if (linked)
+                options += " (Vinculado)";
+            if (config.patientId == snapshot.connections[i].id)
+                selectedIndex = i;
+        }
+    } else {
+        options = config.patientName.isEmpty() ? "Paciente actual" : config.patientName.c_str();
+    }
+    lv_dropdown_set_options(diabetesmPatient, options.c_str());
+    styleDropdown(diabetesmPatient);
+    lv_dropdown_set_selected(diabetesmPatient, selectedIndex);
+
+    label(lv_scr_act(), 412, 94, 360, "Frecuencia y procesado", &fonts::montserrat14, theme::Muted);
+    diabetesmMode = lv_dropdown_create(lv_scr_act());
+    lv_obj_set_pos(diabetesmMode, 412, 114);
+    lv_obj_set_size(diabetesmMode, 360, 44);
+    lv_dropdown_set_options(diabetesmMode,
+                            "Cada 2 min: Suavizado (Bolo)\n"
+                            "Cada 15 min: Filtrado LibreView");
+    styleDropdown(diabetesmMode);
+    lv_dropdown_set_selected(diabetesmMode, config.diabetesmSyncFiltered ? 1 : 0);
+
+    label(lv_scr_act(), 28, 168, 360, "Usuario / Correo de Diabetes:M", &fonts::montserrat14, theme::Muted);
+    diabetesmUser = setupInput(28, 188, 360, config.diabetesmUser.c_str(), 160);
+    lv_obj_set_size(diabetesmUser, 360, 44);
+
+    label(lv_scr_act(), 412, 168, 360, "Contraseña (vacía para conservar)", &fonts::montserrat14, theme::Muted);
+    diabetesmPass = setupInput(412, 188, 360, "", 256, true);
+    lv_obj_set_size(diabetesmPass, 360, 44);
 
     diabetesmSwitch = lv_switch_create(lv_scr_act());
-    lv_obj_set_pos(diabetesmSwitch, 28, 268);
-    lv_obj_set_size(diabetesmSwitch, 64, 32);
+    lv_obj_set_pos(diabetesmSwitch, 28, 248);
+    lv_obj_set_size(diabetesmSwitch, 60, 30);
     lv_obj_set_style_bg_color(
         diabetesmSwitch, c(theme::Green),
         lv_style_selector_t(LV_PART_INDICATOR) | lv_style_selector_t(LV_STATE_CHECKED));
@@ -1537,10 +1634,10 @@ void buildDiabetesM() {
     else
         lv_obj_clear_state(diabetesmSwitch, LV_STATE_CHECKED);
 
-    label(lv_scr_act(), 105, 274, 500, "Activar sincronización con Diabetes:M", &fonts::montserrat16);
+    label(lv_scr_act(), 100, 254, 650, "Activar sincronización continua con Diabetes:M", &fonts::montserrat16);
 
-    button(lv_scr_act(), 28, 325, 355, "Guardar", saveDiabetesM);
-    button(lv_scr_act(), 408, 325, 364, "Ajustes", gotoSettings);
+    button(lv_scr_act(), 28, 292, 360, "Guardar", saveDiabetesM);
+    button(lv_scr_act(), 412, 292, 360, "Ajustes", gotoSettings);
 
     setupMessage(config.diabetesmEnabled ? "Sincronización activa con cada lectura de LibreLinkUp."
                                          : "Activa la casilla para sincronizar.");
@@ -1608,11 +1705,13 @@ void updateWeather(lv_obj_t *temp, lv_obj_t *summary, lv_obj_t *icon, weatherico
 void updateForecast() {
     if (!hoursBox)
         return;
-    if (hoursTab && daysTab) {
+    if (hoursTab && daysTab && summaryTab) {
         lv_obj_set_style_bg_color(
             hoursTab, c(forecastView == ForecastView::Hours ? 0x1C563F : theme::Button), 0);
         lv_obj_set_style_bg_color(
             daysTab, c(forecastView == ForecastView::Days ? 0x1C563F : theme::Button), 0);
+        lv_obj_set_style_bg_color(
+            summaryTab, c(forecastView == ForecastView::Summary ? 0x1C563F : theme::Button), 0);
     }
     lv_obj_clean(hoursBox);
     if (forecastView == ForecastView::Hours) {
@@ -1652,7 +1751,7 @@ void updateForecast() {
             txt = label(card, 0, 168, 120, rain, &fonts::montserrat16, theme::Blue);
             lv_obj_set_style_text_align(txt, LV_TEXT_ALIGN_CENTER, 0);
         }
-    } else {
+    } else if (forecastView == ForecastView::Days) {
         if (!snapshot.dayCount) {
             label(hoursBox, 26, 95, 700,
                   snapshot.weatherError[0] ? snapshot.weatherError
@@ -1699,6 +1798,106 @@ void updateForecast() {
             lv_obj_set_style_text_align(txt, LV_TEXT_ALIGN_CENTER, 0);
             txt = label(card, 0, 184, 182, rain, &fonts::montserrat16, theme::Blue);
             lv_obj_set_style_text_align(txt, LV_TEXT_ALIGN_CENTER, 0);
+        }
+    } else if (forecastView == ForecastView::Summary) {
+        // Card 1: Tiempo en Rango
+        auto *tirCard = lv_obj_create(hoursBox);
+        lv_obj_set_pos(tirCard, 8, 9);
+        lv_obj_set_size(tirCard, 242, 220);
+        lv_obj_set_style_bg_color(tirCard, c(theme::Background), 0);
+        lv_obj_set_style_border_width(tirCard, 1, 0);
+        lv_obj_set_style_border_color(tirCard, c(theme::Grid), 0);
+        lv_obj_set_style_radius(tirCard, 16, 0);
+        lv_obj_set_style_pad_all(tirCard, 0, 0);
+        lv_obj_clear_flag(tirCard, LV_OBJ_FLAG_SCROLLABLE);
+
+        label(tirCard, 14, 10, 214, "TIEMPO EN RANGO", &fonts::montserrat14, theme::Blue);
+        if (snapshot.dailySummary.valid && snapshot.dailySummary.totalReadings > 0) {
+            char tirVal[16];
+            snprintf(tirVal, sizeof(tirVal), "%.0f%%", snapshot.dailySummary.tirPercent);
+            uint32_t col = tirColor(snapshot.dailySummary.tirPercent);
+            label(tirCard, 14, 34, 214, tirVal, &fonts::montserrat48, col);
+
+            const char *status = snapshot.dailySummary.tirPercent >= 90.0f ? "Excelente (>90%)"
+                                 : snapshot.dailySummary.tirPercent >= 70.0f ? "Objetivo cumplido"
+                                                                             : "Bajo objetivo (<70%)";
+            label(tirCard, 14, 94, 214, status, &fonts::montserrat16, col);
+
+            char sub[80];
+            snprintf(sub, sizeof(sub), "En rango: %.0f%%\nBajo: %.0f%%  ·  Alto: %.0f%%",
+                     snapshot.dailySummary.tirPercent, snapshot.dailySummary.lowPercent,
+                     snapshot.dailySummary.highPercent);
+            auto *subTxt = label(tirCard, 14, 134, 214, sub, &fonts::montserrat14, theme::Muted);
+            lv_label_set_long_mode(subTxt, LV_LABEL_LONG_WRAP);
+        } else {
+            label(tirCard, 14, 34, 214, "--%", &fonts::montserrat48, theme::Muted);
+            label(tirCard, 14, 94, 214, "Sin lecturas hoy", &fonts::montserrat16, theme::Muted);
+            label(tirCard, 14, 134, 214, "Esperando lecturas de LibreLinkUp...", &fonts::montserrat14, theme::Muted);
+        }
+
+        // Card 2: Estadísticas del Día
+        auto *statsCard = lv_obj_create(hoursBox);
+        lv_obj_set_pos(statsCard, 258, 9);
+        lv_obj_set_size(statsCard, 242, 220);
+        lv_obj_set_style_bg_color(statsCard, c(theme::Background), 0);
+        lv_obj_set_style_border_width(statsCard, 1, 0);
+        lv_obj_set_style_border_color(statsCard, c(theme::Grid), 0);
+        lv_obj_set_style_radius(statsCard, 16, 0);
+        lv_obj_set_style_pad_all(statsCard, 0, 0);
+        lv_obj_clear_flag(statsCard, LV_OBJ_FLAG_SCROLLABLE);
+
+        label(statsCard, 14, 10, 214, "ESTADÍSTICAS HOY", &fonts::montserrat14, theme::Muted);
+        if (snapshot.dailySummary.valid && snapshot.dailySummary.totalReadings > 0) {
+            char avgVal[24];
+            snprintf(avgVal, sizeof(avgVal), "%d mg/dL", snapshot.dailySummary.averageGlucose);
+            uint32_t col = rangeColor(snapshot.dailySummary.averageGlucose);
+            label(statsCard, 14, 38, 214, "Media del día:", &fonts::montserrat14, theme::Muted);
+            label(statsCard, 14, 60, 214, avgVal, &fonts::montserrat28, col);
+
+            char minMax[48];
+            snprintf(minMax, sizeof(minMax), "Mín: %d  ·  Máx: %d",
+                     snapshot.dailySummary.minGlucose, snapshot.dailySummary.maxGlucose);
+            label(statsCard, 14, 114, 214, minMax, &fonts::montserrat16);
+
+            char countStr[48];
+            snprintf(countStr, sizeof(countStr), "Lecturas hoy: %u", snapshot.dailySummary.totalReadings);
+            label(statsCard, 14, 148, 214, countStr, &fonts::montserrat14, theme::Muted);
+            label(statsCard, 14, 178, 214, "Persistente en NVS", &fonts::montserrat14, theme::Blue);
+        } else {
+            label(statsCard, 14, 50, 214, "---", &fonts::montserrat32, theme::Muted);
+            label(statsCard, 14, 110, 214, "Historial vacío", &fonts::montserrat16, theme::Muted);
+            label(statsCard, 14, 150, 214, "Se guarda en flash para no perder el día", &fonts::montserrat14, theme::Muted);
+        }
+
+        // Card 3: Paciente y Diabetes:M
+        auto *syncCard = lv_obj_create(hoursBox);
+        lv_obj_set_pos(syncCard, 508, 9);
+        lv_obj_set_size(syncCard, 246, 220);
+        lv_obj_set_style_bg_color(syncCard, c(theme::Background), 0);
+        lv_obj_set_style_border_width(syncCard, 1, 0);
+        lv_obj_set_style_border_color(syncCard, c(theme::Grid), 0);
+        lv_obj_set_style_radius(syncCard, 16, 0);
+        lv_obj_set_style_pad_all(syncCard, 0, 0);
+        lv_obj_clear_flag(syncCard, LV_OBJ_FLAG_SCROLLABLE);
+
+        label(syncCard, 14, 10, 218, "PACIENTE Y DIARIO", &fonts::montserrat14, theme::Muted);
+        const char *pName = config.patientName.isEmpty() ? "Sin paciente" : config.patientName.c_str();
+        auto *pTxt = label(syncCard, 14, 34, 218, pName, &fonts::montserrat20);
+        lv_label_set_long_mode(pTxt, LV_LABEL_LONG_WRAP);
+
+        char dmAcc[64]{};
+        const bool linked = dmLinkHasAccount(config.patientId.c_str(), dmAcc, sizeof(dmAcc));
+        if (linked) {
+            label(syncCard, 14, 90, 218, "Diabetes:M vinculado", &fonts::montserrat16, theme::GreenBold);
+            const char *syncMode = config.diabetesmSyncFiltered ? "Modo: Filtrado Libre (15m)" : "Modo: Suavizado (2m)";
+            label(syncCard, 14, 122, 218, syncMode, &fonts::montserrat14, theme::Muted);
+            if (dmAcc[0]) {
+                auto *accTxt = label(syncCard, 14, 154, 218, dmAcc, &fonts::montserrat14, theme::Muted);
+                lv_label_set_long_mode(accTxt, LV_LABEL_LONG_WRAP);
+            }
+        } else {
+            label(syncCard, 14, 90, 218, "Sin cuenta Diabetes:M", &fonts::montserrat16, theme::Orange);
+            label(syncCard, 14, 122, 218, "Vincula este usuario en Ajustes para subir lecturas.", &fonts::montserrat14, theme::Muted);
         }
     }
 }
@@ -1839,7 +2038,8 @@ void uiTick() {
                 setupMessage(error.isEmpty() ? "Selecciona un usuario" : error);
             break;
         case SetupAction::SaveDiabetesM:
-            if (deviceQueueDiabetesM(actionUser, actionPassword, actionConnect, error)) {
+            if (deviceQueueDiabetesM(actionUser, actionPassword, actionConnect, error,
+                                     actionTargetPatientId, actionSyncFiltered)) {
                 mutationAwaiting = action;
                 setupMessage("Guardando Diabetes:M...");
             } else
@@ -1938,7 +2138,7 @@ void uiTick() {
         return;
     }
     if (page == Page::Settings || page == Page::Wifi || page == Page::WifiEdit ||
-        page == Page::Location || page == Page::Libre) {
+        page == Page::Location || page == Page::Libre || page == Page::DiabetesM) {
         if (page == Page::Settings && setupStatus && strcmp(configStorageState(), "invalid") &&
             strcmp(configStorageState(), "unavailable")) {
             const char *wifiMessage = config.ssid.isEmpty() ? "Empieza por Wi-Fi de 2,4 GHz."
@@ -2051,6 +2251,17 @@ void uiTick() {
                 lv_obj_set_style_bg_color(glucoseAccent, c(theme::Muted), 0);
             }
             lv_obj_invalidate(arrow);
+            if (tirHomeLabel) {
+                if (snapshot.dailySummary.valid && snapshot.dailySummary.totalReadings > 0) {
+                    char tirBuf[32];
+                    snprintf(tirBuf, sizeof(tirBuf), "TIR %.0f%%", snapshot.dailySummary.tirPercent);
+                    lv_label_set_text(tirHomeLabel, tirBuf);
+                    lv_obj_set_style_text_color(tirHomeLabel, c(tirColor(snapshot.dailySummary.tirPercent)), 0);
+                } else {
+                    lv_label_set_text(tirHomeLabel, "TIR --%");
+                    lv_obj_set_style_text_color(tirHomeLabel, c(theme::Muted), 0);
+                }
+            }
         }
         renderedRequestStep = requestStep;
         // Reposicionar la gráfica cada diez minutos sin redibujarla cada minuto.
@@ -2062,10 +2273,10 @@ void uiTick() {
     } else if (page == Page::Clock) {
         if (minuteChanged)
             setClock(clockBig, clockDate);
-        if (weatherChanged) {
+        if (weatherChanged)
             updateWeather(clockWeather, clockSummary, clockIcon, clockGlyph);
+        if (weatherChanged || (glucoseChanged && forecastView == ForecastView::Summary))
             updateForecast();
-        }
     }
     renderedGlucose = snapshot.glucoseFetched;
     renderedPoints = snapshot.pointCount;

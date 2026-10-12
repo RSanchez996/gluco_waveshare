@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "diabetesm_links.hpp"
 #include "net.hpp"
 #include "runtime.hpp"
 #include "web_assets.hpp"
@@ -135,6 +136,24 @@ esp_err_t get(httpd_req_t *req) {
         d["diabetesm_user"] = c.diabetesmUser;
         d["has_diabetesm_password"] = !c.diabetesmPass.isEmpty();
         d["diabetesm_enabled"] = c.diabetesmEnabled;
+        d["diabetesm_sync_filtered"] = c.diabetesmSyncFiltered;
+        char activeDm[160]{};
+        const bool activeDmLinked = dmLinkHasAccount(c.patientId.c_str(), activeDm, sizeof(activeDm));
+        d["active_patient_dm_linked"] = activeDmLinked;
+        d["active_patient_dm_user"] = activeDm;
+
+        xSemaphoreTake(stateMutex, portMAX_DELAY);
+        const size_t connCount = sharedState ? sharedState->connectionCount : 0;
+        auto conns = d.createNestedArray("connections");
+        for (size_t i = 0; i < connCount; ++i) {
+            auto conn = conns.createNestedObject();
+            conn["id"] = sharedState->connections[i].id;
+            conn["name"] = sharedState->connections[i].name;
+            char u[160]{};
+            conn["dm_linked"] = dmLinkHasAccount(sharedState->connections[i].id, u, sizeof(u));
+            conn["dm_user"] = u;
+        }
+        xSemaphoreGive(stateMutex);
         d["patient_id"] = c.patientId;
         d["patient_name"] = c.patientName;
         d["city"] = c.city;
@@ -296,8 +315,25 @@ esp_err_t post(httpd_req_t *req) {
             next.diabetesmPass = "";
         if (d.containsKey("diabetesm_enabled"))
             next.diabetesmEnabled = d["diabetesm_enabled"].as<bool>();
+        if (d.containsKey("diabetesm_sync_filtered"))
+            next.diabetesmSyncFiltered = d["diabetesm_sync_filtered"].as<bool>();
         next.patientId = d["patient_id"] | "";
         next.patientName = d["patient_name"] | "";
+        String dmPatientId = d["diabetesm_patient_id"] | "";
+        if (dmPatientId.isEmpty())
+            dmPatientId = next.patientId;
+        if (!dmPatientId.isEmpty() && (d.containsKey("diabetesm_user") || d.containsKey("diabetesm_enabled") || d.containsKey("diabetesm_sync_filtered"))) {
+            DiabetesMLink link{};
+            strlcpy(link.patientId, dmPatientId.c_str(), sizeof(link.patientId));
+            strlcpy(link.user, next.diabetesmUser.c_str(), sizeof(link.user));
+            strlcpy(link.pass, next.diabetesmPass.c_str(), sizeof(link.pass));
+            link.enabled = next.diabetesmEnabled;
+            link.syncFiltered = next.diabetesmSyncFiltered;
+            dmLinkSave(link);
+        }
+        if (!next.patientId.isEmpty() && dmPatientId != next.patientId) {
+            dmLinkApply(next.patientId.c_str(), next);
+        }
         next.city = d["city"] | "";
         next.latitude = d["latitude"] | 0.0f;
         next.longitude = d["longitude"] | 0.0f;

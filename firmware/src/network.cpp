@@ -1,9 +1,13 @@
 #include "app.hpp"
+#include "diabetesm_links.hpp"
+#include "history_store.hpp"
 #include "net.hpp"
 #include "providers.hpp"
 #include "runtime.hpp"
 #include <WiFi.h>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <esp_netif.h>
 #include <esp_wifi.h>
 
@@ -17,6 +21,53 @@ constexpr uint32_t kWifiStableMs = 8000;
 constexpr uint32_t kReconnectFallbackMs = 60000;
 constexpr uint32_t kExtraWifiFallbackMs = 30000;
 AppState *work = nullptr;
+
+struct GlucoseSmoother {
+    float lastSmoothed = 0.0f;
+    int64_t lastEpoch = 0;
+
+    void reset() {
+        lastSmoothed = 0.0f;
+        lastEpoch = 0;
+    }
+
+    gluco::Point smooth(const gluco::Point &raw, const char *trendDirection = nullptr) {
+        if (raw.epoch <= 0 || raw.glucose <= 0)
+            return raw;
+
+        if (lastEpoch <= 0 || lastSmoothed <= 0.0f || raw.epoch < lastEpoch || (raw.epoch - lastEpoch) > 6 * 60) {
+            lastSmoothed = static_cast<float>(raw.glucose);
+            lastEpoch = raw.epoch;
+            return raw;
+        }
+
+        const float dtMinutes = std::max(0.5f, static_cast<float>(raw.epoch - lastEpoch) / 60.0f);
+        const float maxDelta = 4.0f * dtMinutes + 6.0f;
+        const float clamped = std::clamp(static_cast<float>(raw.glucose),
+                                         lastSmoothed - maxDelta,
+                                         lastSmoothed + maxDelta);
+
+        float alpha = 0.70f;
+        if (trendDirection && trendDirection[0]) {
+            if (strstr(trendDirection, "Up") && clamped > lastSmoothed) {
+                alpha = 0.85f;
+            } else if (strstr(trendDirection, "Down") && clamped < lastSmoothed) {
+                alpha = 0.85f;
+            }
+        }
+        const float filtered = alpha * clamped + (1.0f - alpha) * lastSmoothed;
+
+        lastSmoothed = filtered;
+        lastEpoch = raw.epoch;
+
+        gluco::Point result;
+        result.epoch = raw.epoch;
+        result.glucose = static_cast<int16_t>(std::clamp(static_cast<int>(std::round(filtered)), 20, 500));
+        Serial.printf("[SMOOTHER] raw=%d -> smoothed=%d (dt=%.1fm, clamped=%.0f)\n",
+                      raw.glucose, result.glucose, dtMinutes, clamped);
+        return result;
+    }
+};
 
 bool due(uint32_t now, uint32_t at) { return at && int32_t(now - at) >= 0; }
 
@@ -106,6 +157,7 @@ void task(void *) {
 
     LibreClient libre;
     DiabetesMClient diabetesm;
+    GlucoseSmoother smoother;
     uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0;
     uint32_t connectedAt = 0, disconnectedAt = 0, lastTlsRequest = 0, lastLibreRequest = 0,
              reconnectAt = 0, libreBlockedUntil = 0;
@@ -128,12 +180,18 @@ void task(void *) {
         config = configSnapshot();
         if (strcmp(work->activePatientId, config.patientId.c_str()) != 0) {
             strlcpy(work->activePatientId, config.patientId.c_str(), sizeof(work->activePatientId));
+            char dmUser[160]{};
+            work->activePatientDmLinked = dmLinkHasAccount(config.patientId.c_str(), dmUser, sizeof(dmUser));
+            strlcpy(work->activePatientDmUser, dmUser, sizeof(work->activePatientDmUser));
+            historyStoreLoad(config.patientId.c_str(), work->dailySummary, time(nullptr));
             work->pointCount = 0;
             work->currentValid = false;
             work->current = {};
             work->direction[0] = 0;
             work->glucoseFetched = 0;
             work->glucoseRequestStartedMs = 0;
+            diabetesm.resetSession();
+            smoother.reset();
             text(work->glucoseError, "Usuario cambiado; esperando una lectura nueva...");
             glucoseDue = millis() + 1000;
             libreBlockedUntil = 0;
@@ -146,6 +204,9 @@ void task(void *) {
             if (configSelectPatient(selection.id, selection.name)) {
                 config = configSnapshot();
                 strlcpy(work->activePatientId, selection.id, sizeof(work->activePatientId));
+                char dmUser[160]{};
+                work->activePatientDmLinked = dmLinkHasAccount(selection.id, dmUser, sizeof(dmUser));
+                strlcpy(work->activePatientDmUser, dmUser, sizeof(work->activePatientDmUser));
                 if (changedPatient) {
                     glucoseShortRetries = 0;
                     work->pointCount = 0;
@@ -153,17 +214,17 @@ void task(void *) {
                     work->current = {};
                     work->direction[0] = 0;
                     work->glucoseFetched = 0;
-                    // El histórico está solo en RAM; no escribir flash al
-                    // cambiar, ni mostrar la lectura del usuario anterior.
+                    diabetesm.resetSession();
+                    smoother.reset();
+                    historyStoreLoad(selection.id, work->dailySummary, time(nullptr));
                 }
-                text(work->glucoseError, changedPatient
-                                             ? "Usuario cambiado; esperando una lectura nueva..."
-                                             : "Actualizando la lectura del usuario actual...");
-                // La autenticación es de la cuenta, no de cada paciente. Reutilizar
-                // el token evita repetir un POST TLS al cambiar de usuario.
+                String msg = "Usuario: " + String(selection.name) +
+                             (work->activePatientDmLinked ? " (DM vinculado)" : " (Sin DM)");
+                text(work->glucoseError, msg.c_str());
                 libreBlockedUntil = 0;
                 glucoseDue = millis() + 1000;
-                Serial.printf("[LIBRE] Usuario activo: %s\n", selection.name);
+                Serial.printf("[LIBRE] Usuario activo: %s | Diabetes:M: %s\n", selection.name,
+                              work->activePatientDmLinked ? work->activePatientDmUser : "no vinculado");
                 publish();
             } else {
                 text(work->glucoseError, "No se pudo guardar el usuario seleccionado");
@@ -206,6 +267,7 @@ void task(void *) {
                 libre.resetSession();
                 libreBlockedUntil = 0;
                 scheduleReady = false;
+                smoother.reset();
                 publish();
             }
             const String currentLocationKey =
@@ -227,6 +289,7 @@ void task(void *) {
             if (currentDiabetesMKey != diabetesmKey) {
                 diabetesmKey = currentDiabetesMKey;
                 diabetesm.resetSession();
+                smoother.reset();
                 if (work->currentValid && config.diabetesmEnabled) {
                     glucoseDue = millis();
                 }
@@ -240,51 +303,69 @@ void task(void *) {
             if (wifi == WL_CONNECTED) {
                 esp_wifi_set_ps(WIFI_PS_NONE);
                 WiFi.setSleep(false);
-                esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                if (sta)
-                    esp_netif_set_default_netif(sta);
-                IPAddress dns0 = WiFi.dnsIP(0);
-                if (dns0 == IPAddress(0, 0, 0, 0) || dns0 == WiFi.softAPIP()) {
-                    WiFi.setDNS(IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
-                    Serial.println("[WIFI] DNS configurado a servidores publicos (8.8.8.8, 1.1.1.1)");
-                } else {
-                    WiFi.setDNS(dns0, IPAddress(8, 8, 8, 8));
-                }
-                Serial.printf("[WIFI] Conectado: %s | GW: %s | DNS: %s | RSSI %d dBm\n",
+                Serial.printf("[WIFI] Conectado: %s | GW: %s | RSSI %d dBm\n",
                               WiFi.localIP().toString().c_str(),
-                              WiFi.gatewayIP().toString().c_str(),
-                              WiFi.dnsIP(0).toString().c_str(), WiFi.RSSI());
+                              WiFi.gatewayIP().toString().c_str(), WiFi.RSSI());
             } else
                 Serial.printf("[WIFI] Estado %d; la reconexión automática sigue activa\n", wifi);
         }
         if (wifi != WL_CONNECTED) {
             if (!disconnectedAt) {
                 disconnectedAt = now;
-                reconnectAt = now + (config.extraWifiCount ? 15000 : kReconnectFallbackMs);
+                reconnectAt = now + (config.extraWifiCount ? 5000 : kReconnectFallbackMs);
                 fallbackIndex = 0;
             }
             connectedAt = 0;
             scheduleReady = false;
             appDiagnosticStage("Esperando conexión Wi-Fi");
-            publishGlucoseStatus("Wi-Fi desconectado; mostrando los últimos datos guardados");
+            publishGlucoseStatus("Wi-Fi desconectado; buscando redes guardadas...");
             if (!config.ssid.isEmpty() && (!reconnectAt || int32_t(now - reconnectAt) >= 0)) {
+                WiFi.disconnect();
+                vTaskDelay(pdMS_TO_TICKS(150));
                 if (config.extraWifiCount) {
-                    // Dejar primero 15 s al reintento automático; después probar
-                    // las redes guardadas de una en una, solo sin conexión.
-                    const size_t index = fallbackIndex++ % (config.extraWifiCount + 1);
-                    const String &ssid =
-                        index < config.extraWifiCount ? config.extraWifi[index].ssid : config.ssid;
-                    const String &pass = index < config.extraWifiCount
-                                             ? config.extraWifi[index].password
-                                             : config.wifiPass;
-                    Serial.printf("[WIFI] Probando red guardada %s\n", ssid.c_str());
-                    WiFi.begin(ssid.c_str(), pass.c_str());
-                    reconnectAt = now + kExtraWifiFallbackMs;
+                    Serial.println("[WIFI] Buscando redes guardadas en alcance...");
+                    int n = WiFi.scanNetworks(false, false, false, 150);
+                    int bestRssi = -999;
+                    String bestSsid, bestPass;
+                    if (n > 0) {
+                        for (int i = 0; i < n; ++i) {
+                            String scanned = WiFi.SSID(i);
+                            int rssi = WiFi.RSSI(i);
+                            if (scanned == config.ssid && rssi > bestRssi) {
+                                bestRssi = rssi;
+                                bestSsid = config.ssid;
+                                bestPass = config.wifiPass;
+                            }
+                            for (size_t j = 0; j < config.extraWifiCount; ++j) {
+                                if (scanned == config.extraWifi[j].ssid && rssi > bestRssi) {
+                                    bestRssi = rssi;
+                                    bestSsid = config.extraWifi[j].ssid;
+                                    bestPass = config.extraWifi[j].password;
+                                }
+                            }
+                        }
+                        WiFi.scanDelete();
+                    }
+                    if (!bestSsid.isEmpty()) {
+                        Serial.printf("[WIFI] Conectando a red detectada con mejor señal: %s (RSSI %d dBm)\n",
+                                      bestSsid.c_str(), bestRssi);
+                        WiFi.begin(bestSsid.c_str(), bestPass.c_str());
+                        reconnectAt = now + 15000;
+                    } else {
+                        const size_t index = fallbackIndex++ % (config.extraWifiCount + 1);
+                        const String &ssid =
+                            index < config.extraWifiCount ? config.extraWifi[index].ssid : config.ssid;
+                        const String &pass = index < config.extraWifiCount
+                                                 ? config.extraWifi[index].password
+                                                 : config.wifiPass;
+                        Serial.printf("[WIFI] Probando red guardada en rotación: %s\n", ssid.c_str());
+                        WiFi.begin(ssid.c_str(), pass.c_str());
+                        reconnectAt = now + 15000;
+                    }
                 } else {
-                    WiFi.reconnect();
-                    reconnectAt = now + kReconnectFallbackMs;
-                    Serial.println(
-                        "[WIFI] Reintento de respaldo sin borrar ni reiniciar la interfaz");
+                    WiFi.begin(config.ssid.c_str(), config.wifiPass.c_str());
+                    reconnectAt = now + 15000;
+                    Serial.println("[WIFI] Reintentando conexión...");
                 }
             }
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -309,6 +390,10 @@ void task(void *) {
         }
         if (!scheduleReady) {
             scheduleReady = true;
+            char dmUser[160]{};
+            work->activePatientDmLinked = dmLinkHasAccount(config.patientId.c_str(), dmUser, sizeof(dmUser));
+            strlcpy(work->activePatientDmUser, dmUser, sizeof(work->activePatientDmUser));
+            historyStoreLoad(config.patientId.c_str(), work->dailySummary, time(nullptr));
             const uint32_t start = millis();
             const bool hasPatient = !config.patientId.isEmpty();
             const bool usersFresh = work->connectionCount && (hasPatient || (work->connectionsFetched > 0 &&
@@ -336,9 +421,25 @@ void task(void *) {
             publish();
             const uint32_t wait = libre.read(*work);
             work->glucoseRequestStartedMs = 0;
-            if (work->currentValid && config.diabetesmEnabled) {
-                String dmError;
-                diabetesm.uploadGlucose(work->current, config, dmError);
+            if (work->currentValid || work->pointCount > 0) {
+                historyStoreMerge(config.patientId.c_str(), work->points, work->pointCount,
+                                  work->current, work->currentValid, work->dailySummary, time(nullptr));
+            }
+            const bool dmLinked = dmLinkHasAccount(config.patientId.c_str());
+            if (config.diabetesmEnabled && dmLinked) {
+                gluco::Point pointToUpload{};
+                if (config.diabetesmSyncFiltered) {
+                    if (work->pointCount > 0)
+                        pointToUpload = work->points[work->pointCount - 1];
+                } else {
+                    if (work->currentValid && work->current.epoch > 0 && work->current.glucose > 0) {
+                        pointToUpload = smoother.smooth(work->current, work->direction);
+                    }
+                }
+                if (pointToUpload.epoch > 0 && pointToUpload.glucose > 0) {
+                    String dmError;
+                    diabetesm.uploadGlucose(pointToUpload, config, dmError);
+                }
             }
             publish();
             appDiagnosticStage("Esperando siguiente consulta");
@@ -348,7 +449,7 @@ void task(void *) {
             const uint32_t seconds = transient && glucoseShortRetries == 0
                                          ? std::max<uint32_t>(45, wait)
                                          : std::max<uint32_t>(120, wait);
-            glucoseShortRetries = transient ? std::min<uint8_t>(2, glucoseShortRetries + 1) : 0;
+            glucoseShortRetries = transient ? std::min<uint8_t>(3, glucoseShortRetries + 1) : 0;
             glucoseDue = lastTlsRequest + seconds * 1000;
             if (work->glucoseError[0] && wait > 120)
                 libreBlockedUntil = lastTlsRequest + wait * 1000;

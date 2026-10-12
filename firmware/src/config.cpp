@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "diabetesm_links.hpp"
 #include "net.hpp"
 #include "providers.hpp"
 #include "runtime.hpp"
@@ -33,8 +34,8 @@ enum class Kind {
 };
 struct Request {
     Kind kind = Kind::Scan;
-    String text, password, region;
-    bool connect = false;
+    String text, password, region, patientId;
+    bool connect = false, syncFiltered = false;
     LocationChoice location{};
     ConnectionChoice patient{};
     Config full;
@@ -81,6 +82,7 @@ void toJson(const Config &c, Doc &d) {
     d["diabetesm_user"] = c.diabetesmUser;
     d["diabetesm_password"] = c.diabetesmPass;
     d["diabetesm_enabled"] = c.diabetesmEnabled;
+    d["diabetesm_sync_filtered"] = c.diabetesmSyncFiltered;
 }
 void fromJson(JsonVariantConst d, Config &c) {
     c.ssid = d["ssid"] | "";
@@ -99,6 +101,7 @@ void fromJson(JsonVariantConst d, Config &c) {
     c.diabetesmUser = d["diabetesm_user"] | "";
     c.diabetesmPass = d["diabetesm_password"] | "";
     c.diabetesmEnabled = d["diabetesm_enabled"] | false;
+    c.diabetesmSyncFiltered = d["diabetesm_sync_filtered"] | false;
     c.extraWifiCount = 0;
     for (JsonObjectConst n : d["wifi_networks"].as<JsonArrayConst>()) {
         if (c.extraWifiCount == MAX_EXTRA_WIFI)
@@ -415,6 +418,7 @@ bool configSelectPatient(const char *id, const char *name) {
         return true;
     next.patientId = id;
     next.patientName = name;
+    dmLinkApply(id, next);
     String error;
     return persist(next, error);
 }
@@ -520,13 +524,16 @@ bool deviceQueueLibreUser(const ConnectionChoice &p, String &error) {
     }
     return submit(r, error);
 }
-bool deviceQueueDiabetesM(const String &user, const String &password, bool enabled, String &error) {
+bool deviceQueueDiabetesM(const String &user, const String &password, bool enabled, String &error,
+                          const String &patientId, bool syncFiltered) {
     auto *r = new (std::nothrow) Request{};
     if (r) {
         r->kind = Kind::DiabetesM;
         r->text = user;
         r->password = password;
         r->connect = enabled;
+        r->patientId = patientId;
+        r->syncFiltered = syncFiltered;
     }
     return submit(r, error);
 }
@@ -658,16 +665,40 @@ bool deviceSaveLibreUser(const ConnectionChoice &p, String &error) {
     next.libreVersion = staged.version;
     next.patientId = p.id;
     next.patientName = p.name;
+    dmLinkApply(p.id, next);
     return persist(next, error);
 }
-bool deviceSaveDiabetesM(const String &user, const String &pass, bool enabled, String &error) {
+bool deviceSaveDiabetesM(const String &user, const String &pass, bool enabled, String &error,
+                         const String &patientId, bool syncFiltered) {
     Config next = configSnapshot();
-    next.diabetesmUser = user;
-    next.diabetesmUser.trim();
-    if (!pass.isEmpty())
-        next.diabetesmPass = pass;
-    next.diabetesmEnabled = enabled;
-    return persist(next, error);
+    String targetId = patientId.isEmpty() ? next.patientId : patientId;
+    if (!targetId.isEmpty()) {
+        DiabetesMLink link{};
+        strlcpy(link.patientId, targetId.c_str(), sizeof(link.patientId));
+        strlcpy(link.user, user.c_str(), sizeof(link.user));
+        if (!pass.isEmpty()) {
+            strlcpy(link.pass, pass.c_str(), sizeof(link.pass));
+        } else {
+            DiabetesMLink oldLink{};
+            if (dmLinkGet(targetId.c_str(), oldLink))
+                strlcpy(link.pass, oldLink.pass, sizeof(link.pass));
+            else if (targetId == next.patientId)
+                strlcpy(link.pass, next.diabetesmPass.c_str(), sizeof(link.pass));
+        }
+        link.enabled = enabled;
+        link.syncFiltered = syncFiltered;
+        dmLinkSave(link);
+    }
+    if (targetId.isEmpty() || targetId == next.patientId) {
+        next.diabetesmUser = user;
+        next.diabetesmUser.trim();
+        if (!pass.isEmpty())
+            next.diabetesmPass = pass;
+        next.diabetesmEnabled = enabled;
+        next.diabetesmSyncFiltered = syncFiltered;
+        return persist(next, error);
+    }
+    return true;
 }
 bool configQueueFull(const Config &next, String &error, bool networksOnly) {
     auto *r = new (std::nothrow) Request{};
@@ -738,7 +769,7 @@ bool configService() {
         ok = deviceSaveLibreUser(r->patient, error);
         break;
     case Kind::DiabetesM:
-        ok = deviceSaveDiabetesM(r->text, r->password, r->connect, error);
+        ok = deviceSaveDiabetesM(r->text, r->password, r->connect, error, r->patientId, r->syncFiltered);
         break;
     case Kind::Networks: {
         if (r->full.extraWifiCount > MAX_EXTRA_WIFI) {
@@ -772,7 +803,7 @@ bool configService() {
         xSemaphoreTake(storageMutex, portMAX_DELAY);
         Preferences p;
         ok = true;
-        for (const char *ns : {"glucowave", "glucousers", "glucohist", "glucodiag"})
+        for (const char *ns : {"glucowave", "glucousers", "glucohist", "glucodiag", "glucodm"})
             if (p.begin(ns, false)) {
                 ok = p.clear() && ok;
                 p.end();

@@ -125,11 +125,37 @@ $("loginLibre").addEventListener("click",async()=>{
       $("libreMessage").textContent=`Conectando con LibreLinkUp... ${elapsed} s`;
     }
     if(!r||r.state!=="ready")throw Error("LibreLinkUp no respondió en 90 segundos. Inténtalo de nuevo.");
+function populatePatientSelect(list){
+  const sel=$("diabetesm_patient");if(!sel)return;
+  sel.replaceChildren();
+  if(!list||!list.length){
+    if(selected.id){
+      const opt=document.createElement("option");opt.value=selected.id;opt.textContent=selected.name||selected.id;sel.append(opt);
+    }else{
+      const opt=document.createElement("option");opt.value="";opt.textContent="(Selecciona usuario primero)";sel.append(opt);
+    }
+    return;
+  }
+  for(const p of list){
+    const opt=document.createElement("option");opt.value=p.id;
+    opt.textContent=`${p.name} ${p.dm_linked?'[DM vinculado]':'[Sin DM]'}`;
+    if(p.id===(selected.id||cfg.patient_id))opt.selected=true;
+    sel.append(opt);
+  }
+}
+
     $("libre_region").value=r.region;$("patients").replaceChildren();selected={id:"",name:""};
+    populatePatientSelect(r.patients);
     for(const p of r.patients){
       const b=document.createElement("button");b.type="button";b.className="choice";b.innerHTML="<strong></strong><small></small>";
-      b.querySelector("strong").textContent=p.name;b.querySelector("small").textContent=p.id;
-      b.addEventListener("click",()=>{document.querySelectorAll("#patients .choice").forEach(x=>x.classList.remove("selected"));b.classList.add("selected");selected=p;message(`Usuario seleccionado: ${p.name}`);step("diabetesm");});
+      b.querySelector("strong").textContent=p.name;
+      b.querySelector("small").textContent=p.id+(p.dm_linked?" · [Diabetes:M vinculado]":" · [Sin DM]");
+      b.addEventListener("click",()=>{
+        document.querySelectorAll("#patients .choice").forEach(x=>x.classList.remove("selected"));
+        b.classList.add("selected");selected=p;
+        if($("diabetesm_patient"))$("diabetesm_patient").value=p.id;
+        message(`Usuario seleccionado: ${p.name}`);step("diabetesm");
+      });
       $("patients").append(b);
     }
     $("libreMessage").textContent=`Sesión correcta: ${r.patients.length} usuario(s) compartido(s).`;message("Sesión correcta. Elige la persona que mostrará la pantalla.");step("patient");
@@ -158,10 +184,12 @@ $("searchCity").addEventListener("click",async()=>{
   }catch(e){$("locationMessage").textContent=e.message;message(e.message,true)}finally{busy=false;$("searchCity").disabled=false;}
 });
 
-function payload(){return{ssid:$("ssid").value.trim(),wifi_password:$("wifi_password").value,libre_user:$("libre_user").value.trim(),libre_password:$("libre_password").value,libre_region:$("libre_region").value,libre_version:$("libre_version").value.trim(),patient_id:selected.id,patient_name:selected.name,diabetesm_user:$("diabetesm_user").value.trim(),diabetesm_password:$("diabetesm_password").value,diabetesm_enabled:$("diabetesm_enabled").checked,city:location?.name||$("city").value,latitude:Number(location?.latitude??$("latitude").value),longitude:Number(location?.longitude??$("longitude").value),timezone:location?.timezone||$("timezone").value,location_set:!!(location||$("city").value)};}
+function payload(){return{ssid:$("ssid").value.trim(),wifi_password:$("wifi_password").value,libre_user:$("libre_user").value.trim(),libre_password:$("libre_password").value,libre_region:$("libre_region").value,libre_version:$("libre_version").value.trim(),patient_id:selected.id,patient_name:selected.name,diabetesm_user:$("diabetesm_user").value.trim(),diabetesm_password:$("diabetesm_password").value,diabetesm_enabled:$("diabetesm_enabled").checked,diabetesm_sync_filtered:$("diabetesm_mode")?.value==="filtered",diabetesm_patient_id:$("diabetesm_patient")?.value||selected.id||cfg.patient_id,city:location?.name||$("city").value,latitude:Number(location?.latitude??$("latitude").value),longitude:Number(location?.longitude??$("longitude").value),timezone:location?.timezone||$("timezone").value,location_set:!!(location||$("city").value)};}
 function summary(){
   $("summary").innerHTML="";
-  const dmStatus=$("diabetesm_enabled")?.checked?($("diabetesm_user").value?`Activo (${$("diabetesm_user").value})`:"Activo"):"Desactivado";
+  const dmLinkedUser=$("diabetesm_patient")?.selectedOptions?.[0]?.textContent||selected.name||"";
+  const dmMode=$("diabetesm_mode")?.value==="filtered"?"15m LibreView":"2m Suavizado";
+  const dmStatus=$("diabetesm_enabled")?.checked?($("diabetesm_user").value?`Activo (${$("diabetesm_user").value} -> ${dmLinkedUser}, ${dmMode})`:`Activo (${dmLinkedUser}, ${dmMode})`):"Desactivado";
   const rows=[["Wi-Fi",$("ssid").value||"Pendiente"],["Cuenta",$("libre_user").value||"Pendiente"],["Usuario",selected.name||"Pendiente"],["Diabetes:M",dmStatus],["Ubicación",location?.name||$("city").value||"Pendiente"]];
   for(const [k,v] of rows){const d=document.createElement("div"),b=document.createElement("b");b.textContent=k;d.append(b,document.createTextNode(v));$("summary").append(d)}
 }
@@ -204,7 +232,27 @@ async function start(){
     if(cfg.has_libre_password)$("libre_password").placeholder="Guardada; deja vacío para conservar";
     if(cfg.has_diabetesm_password)$("diabetesm_password").placeholder="Guardada; deja vacío para conservar";
     if($("diabetesm_enabled"))$("diabetesm_enabled").checked=!!cfg.diabetesm_enabled;
+    if($("diabetesm_mode"))$("diabetesm_mode").value=cfg.diabetesm_sync_filtered?"filtered":"smoothed";
     if(cfg.patient_id)selected={id:cfg.patient_id,name:cfg.patient_name||cfg.patient_id};
+    if(cfg.connections&&cfg.connections.length){
+      populatePatientSelect(cfg.connections);
+      $("patients").replaceChildren();
+      for(const p of cfg.connections){
+        const b=document.createElement("button");b.type="button";b.className="choice";b.innerHTML="<strong></strong><small></small>";
+        if(p.id===cfg.patient_id)b.classList.add("selected");
+        b.querySelector("strong").textContent=p.name;
+        b.querySelector("small").textContent=p.id+(p.dm_linked?" · [Diabetes:M vinculado]":" · [Sin DM]");
+        b.addEventListener("click",()=>{
+          document.querySelectorAll("#patients .choice").forEach(x=>x.classList.remove("selected"));
+          b.classList.add("selected");selected=p;
+          if($("diabetesm_patient"))$("diabetesm_patient").value=p.id;
+          message(`Usuario seleccionado: ${p.name}`);step("diabetesm");
+        });
+        $("patients").append(b);
+      }
+    }else{
+      populatePatientSelect([]);
+    }
     if(cfg.location_set)location={name:cfg.city,latitude:cfg.latitude,longitude:cfg.longitude,timezone:cfg.timezone};
     summary();
     if(cfg.portal_mode==="wifi"){
