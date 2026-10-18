@@ -2,7 +2,6 @@
 #include "diabetesm_links.hpp"
 #include "fonts.hpp"
 #include "history_store.hpp"
-#include "ota.hpp"
 #include "runtime.hpp"
 #include "theme.hpp"
 #include "weather_icons.hpp"
@@ -12,19 +11,7 @@
 namespace {
 Config config;
 uint32_t uiConfigRevision = UINT32_MAX;
-enum class Page {
-    Home,
-    Clock,
-    Users,
-    Settings,
-    Wifi,
-    WifiEdit,
-    Location,
-    Libre,
-    Setup,
-    DiabetesM,
-    Ota
-};
+enum class Page { Home, Clock, Users, Settings, Wifi, WifiEdit, Location, Libre, Setup, DiabetesM };
 Page page = Page::Home;
 AppState snapshot;
 enum class PendingPage {
@@ -39,8 +26,7 @@ enum class PendingPage {
     Libre,
     Setup,
     CloseSetup,
-    DiabetesM,
-    Ota
+    DiabetesM
 };
 PendingPage pendingPage = PendingPage::None;
 lv_obj_t *timeLabel = nullptr, *dateLabel = nullptr, *weatherLabel = nullptr,
@@ -56,9 +42,6 @@ lv_obj_t *keyboard = nullptr, *keyboardToggle = nullptr, *keyboardLastInput = nu
          *loginRegion = nullptr, *loginList = nullptr, *diabetesmUser = nullptr,
          *diabetesmPass = nullptr, *diabetesmSwitch = nullptr, *diabetesmPatient = nullptr,
          *diabetesmMode = nullptr, *setupStatus = nullptr;
-lv_obj_t *otaCurrentLabel = nullptr, *otaRemoteLabel = nullptr, *otaStatusLabel = nullptr,
-         *otaChangesLabel = nullptr, *otaProgressBar = nullptr, *otaCheckBtn = nullptr,
-         *otaInstallBtn = nullptr, *otaCancelBtn = nullptr, *settingsWifiLabel = nullptr;
 WifiScanEntry scanEntries[16]{};
 size_t scanCount = 0;
 LocationChoice locationEntries[8]{};
@@ -94,8 +77,6 @@ int64_t renderedWeather = -1, renderedGlucose = -1, renderedMinute = -1, rendere
 int64_t renderedRequestStep = -1;
 int renderedLatestValue = -1;
 size_t renderedPoints = size_t(-1);
-size_t renderedTotalReadings = size_t(-1);
-int renderedTir = -1;
 char renderedGlucoseError[160]{}, renderedWeatherError[140]{};
 PortalMode renderedPortal = PortalMode::Off;
 char pendingPatientId[100]{};
@@ -127,11 +108,8 @@ void resetRenderCache() {
         renderedRequestStep = -1;
     renderedLatestValue = -1;
     renderedPoints = size_t(-1);
-    renderedTotalReadings = size_t(-1);
-    renderedTir = -1;
     renderedGlucoseError[0] = renderedWeatherError[0] = 0;
 }
-
 String displayCity() {
     String s = config.city;
     const int comma = s.indexOf(',');
@@ -643,7 +621,6 @@ void buildHome() {
     lv_obj_add_event_cb(graph, chooseGraphPoint, LV_EVENT_CLICKED, nullptr);
 }
 void buildClock() {
-    configUiActive.store(false, std::memory_order_release);
     setupStatus = keyboard = nullptr;
     page = Page::Clock;
     resetRenderCache();
@@ -817,15 +794,6 @@ void gotoLocation(lv_event_t *) { pendingPage = PendingPage::Location; }
 void gotoLibre(lv_event_t *) { pendingPage = PendingPage::Libre; }
 void gotoDiabetesM(lv_event_t *) { pendingPage = PendingPage::DiabetesM; }
 void gotoQr(lv_event_t *) { pendingPage = PendingPage::Setup; }
-void gotoOta(lv_event_t *) {
-    const OtaState st = otaGetStatus().state;
-    if (WiFi.status() == WL_CONNECTED && !otaBusy() &&
-        (st == OtaState::Idle || st == OtaState::Failed)) {
-        String err;
-        otaRequestCheck(err);
-    }
-    pendingPage = PendingPage::Ota;
-}
 void setupMessage(const String &message) {
     if (setupStatus)
         lv_label_set_text(setupStatus, message.c_str());
@@ -834,10 +802,7 @@ void setupHeader(const char *title, bool root = false) {
     configUiActive.store(true, std::memory_order_release);
     keyboard = keyboardToggle = keyboardLastInput = wifiList = wifiSaved = wifiSsid = wifiPass =
         cityInput = locationList = loginUser = loginPass = loginRegion = loginList = diabetesmUser =
-            diabetesmPass = diabetesmSwitch = diabetesmPatient = diabetesmMode = setupStatus =
-                otaCurrentLabel = otaRemoteLabel = otaStatusLabel = otaChangesLabel =
-                    otaProgressBar = otaCheckBtn = otaInstallBtn = otaCancelBtn =
-                        settingsWifiLabel = nullptr;
+            diabetesmPass = diabetesmSwitch = diabetesmPatient = diabetesmMode = setupStatus = nullptr;
     lv_obj_clean(lv_scr_act());
     base(lv_scr_act());
     label(lv_scr_act(), 26, 16, 680, title, &fonts::montserrat28);
@@ -848,7 +813,6 @@ void setupHeader(const char *title, bool root = false) {
     setupStatus = label(lv_scr_act(), 28, 431, 735, "", &fonts::montserrat14, theme::Blue);
     lv_label_set_long_mode(setupStatus, LV_LABEL_LONG_DOT);
 }
-
 // El mapa español y su control map son estáticos: LVGL conserva los punteros.
 const char *spanishLower[] = {"1#",
                               "q",
@@ -1309,212 +1273,50 @@ lv_obj_t *setupList(int x, int y, int w, int h) {
     lv_obj_set_scroll_dir(box, LV_DIR_VER);
     return box;
 }
-void startOtaCheck(lv_event_t *) {
-    String err;
-    if (!otaRequestCheck(err))
-        setupMessage(err);
-}
-void startOtaInstall(lv_event_t *) {
-    String err;
-    if (!otaRequestInstall(err))
-        setupMessage(err);
-}
-void paintOta() {
-    if (page != Page::Ota)
-        return;
-    const OtaStatus st = otaGetStatus();
-    if (otaCurrentLabel) {
-        char curTxt[180];
-        if (st.remoteVersion[0]) {
-            snprintf(curTxt, sizeof(curTxt), "Instalado: v%s [%s]   ·   En GitHub: v%s %s",
-                     st.currentVersion, st.activePartition[0] ? st.activePartition : "app0",
-                     st.remoteVersion, st.remoteBuild);
-        } else {
-            snprintf(curTxt, sizeof(curTxt), "Instalado: v%s [%s]  ·  %s", st.currentVersion,
-                     st.activePartition[0] ? st.activePartition : "app0", st.currentBuild);
-        }
-        if (strcmp(lv_label_get_text(otaCurrentLabel), curTxt) != 0)
-            lv_label_set_text(otaCurrentLabel, curTxt);
-    }
-    if (otaStatusLabel) {
-        uint32_t col = theme::Ink;
-        if (st.state == OtaState::UpdateAvailable || st.state == OtaState::Rebooting)
-            col = theme::GreenBold;
-        else if (st.state == OtaState::UpToDate)
-            col = theme::Green;
-        else if (st.state == OtaState::Failed)
-            col = theme::Red;
-        else if (st.state == OtaState::Downloading || st.state == OtaState::Installing ||
-                 st.state == OtaState::Checking)
-            col = theme::Blue;
-        lv_obj_set_style_text_color(otaStatusLabel, c(col), 0);
-        if (strcmp(lv_label_get_text(otaStatusLabel), st.message) != 0)
-            lv_label_set_text(otaStatusLabel, st.message);
-    }
-    if (otaChangesLabel && st.changes[0]) {
-        if (strcmp(lv_label_get_text(otaChangesLabel), st.changes) != 0)
-            lv_label_set_text(otaChangesLabel, st.changes);
-    }
-    if (otaProgressBar) {
-        lv_bar_set_value(otaProgressBar, st.progressPercent, LV_ANIM_OFF);
-        if (st.state == OtaState::Downloading || st.state == OtaState::Installing ||
-            st.state == OtaState::Rebooting) {
-            lv_obj_clear_flag(otaProgressBar, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(otaProgressBar, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-    const bool busy = otaBusy();
-    const bool installing = st.state == OtaState::Downloading || st.state == OtaState::Installing ||
-                            st.state == OtaState::Rebooting;
-    if (st.state == OtaState::UpdateAvailable && !busy) {
-        if (otaInstallBtn) {
-            lv_obj_clear_flag(otaInstallBtn, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_state(otaInstallBtn, LV_STATE_DISABLED);
-        }
-        if (otaCheckBtn)
-            lv_obj_add_flag(otaCheckBtn, LV_OBJ_FLAG_HIDDEN);
-        if (otaCancelBtn) {
-            lv_obj_clear_flag(otaCancelBtn, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_state(otaCancelBtn, LV_STATE_DISABLED);
-            if (auto *lbl = lv_obj_get_child(otaCancelBtn, 0))
-                lv_label_set_text(lbl, "No, ahora no");
-        }
-    } else {
-        if (otaInstallBtn)
-            lv_obj_add_flag(otaInstallBtn, LV_OBJ_FLAG_HIDDEN);
-        if (otaCheckBtn) {
-            lv_obj_clear_flag(otaCheckBtn, LV_OBJ_FLAG_HIDDEN);
-            if (busy || installing)
-                lv_obj_add_state(otaCheckBtn, LV_STATE_DISABLED);
-            else
-                lv_obj_clear_state(otaCheckBtn, LV_STATE_DISABLED);
-        }
-        if (otaCancelBtn) {
-            lv_obj_clear_flag(otaCancelBtn, LV_OBJ_FLAG_HIDDEN);
-            if (installing)
-                lv_obj_add_state(otaCancelBtn, LV_STATE_DISABLED);
-            else
-                lv_obj_clear_state(otaCancelBtn, LV_STATE_DISABLED);
-            if (auto *lbl = lv_obj_get_child(otaCancelBtn, 0))
-                lv_label_set_text(lbl, "Volver a Ajustes");
-        }
-    }
-}
-void buildOta() {
-    page = Page::Ota;
-    setupHeader("Comprobar actualizaciones");
-    configUiActive.store(false, std::memory_order_release);
-
-    auto *card = lv_obj_create(lv_scr_act());
-    lv_obj_set_pos(card, 28, 68);
-    lv_obj_set_size(card, 744, 284);
-    lv_obj_set_style_bg_color(card, c(theme::Card), 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, c(theme::Grid), 0);
-    lv_obj_set_style_radius(card, 16, 0);
-    lv_obj_set_style_pad_all(card, 0, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-
-    otaCurrentLabel =
-        label(card, 18, 12, 708, "Instalado: ...", &fonts::montserrat14, theme::Muted);
-    lv_label_set_long_mode(otaCurrentLabel, LV_LABEL_LONG_DOT);
-    otaStatusLabel = label(card, 18, 36, 708, "Comprobando actualizaciones en GitHub...",
-                           &fonts::montserrat16, theme::Blue);
-    lv_label_set_long_mode(otaStatusLabel, LV_LABEL_LONG_WRAP);
-
-    label(card, 18, 86, 708, "CAMBIOS Y NOVEDADES DE LA VERSIÓN:", &fonts::montserrat14,
-          theme::Blue);
-
-    auto *changesBox = lv_obj_create(card);
-    lv_obj_set_pos(changesBox, 18, 108);
-    lv_obj_set_size(changesBox, 708, 134);
-    lv_obj_set_style_bg_color(changesBox, c(theme::Background), 0);
-    lv_obj_set_style_border_width(changesBox, 1, 0);
-    lv_obj_set_style_border_color(changesBox, c(theme::Grid), 0);
-    lv_obj_set_style_radius(changesBox, 12, 0);
-    lv_obj_set_style_pad_all(changesBox, 10, 0);
-    lv_obj_set_scroll_dir(changesBox, LV_DIR_VER);
-
-    otaChangesLabel = label(changesBox, 0, 0, 676, "Cargando listado de cambios...",
-                            &fonts::montserrat14, theme::Ink);
-    lv_label_set_long_mode(otaChangesLabel, LV_LABEL_LONG_WRAP);
-
-    otaProgressBar = lv_bar_create(card);
-    lv_obj_set_pos(otaProgressBar, 18, 252);
-    lv_obj_set_size(otaProgressBar, 708, 20);
-    lv_bar_set_range(otaProgressBar, 0, 100);
-    lv_bar_set_value(otaProgressBar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(otaProgressBar, c(theme::Background), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(otaProgressBar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(otaProgressBar, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(otaProgressBar, c(theme::Grid), LV_PART_MAIN);
-    lv_obj_set_style_radius(otaProgressBar, 10, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(otaProgressBar, c(theme::Green), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(otaProgressBar, 10, LV_PART_INDICATOR);
-    lv_obj_add_flag(otaProgressBar, LV_OBJ_FLAG_HIDDEN);
-
-    otaCheckBtn = button(lv_scr_act(), 28, 364, 356, "Comprobar actualizaciones", startOtaCheck);
-    otaInstallBtn = button(lv_scr_act(), 28, 364, 356, "Sí, instalar ahora", startOtaInstall);
-    lv_obj_set_style_bg_color(otaInstallBtn, c(0x1C563F), 0);
-    lv_obj_add_flag(otaInstallBtn, LV_OBJ_FLAG_HIDDEN);
-    otaCancelBtn = button(lv_scr_act(), 408, 364, 364, "Volver a Ajustes", gotoSettings);
-
-    if (WiFi.status() == WL_CONNECTED && !otaBusy() && otaGetStatus().state == OtaState::Idle) {
-        String err;
-        otaRequestCheck(err);
-    }
-    paintOta();
-    setupMessage(WiFi.status() == WL_CONNECTED
-                     ? "Se verifica el SHA-256 antes de instalar. Tus cuentas y Wi-Fi se conservan."
-                     : "Conecta primero el Wi-Fi para buscar actualizaciones.");
-}
-String settingsWifiAndLocText() {
-    String wifiTxt;
-    if (WiFi.status() == WL_CONNECTED && !WiFi.SSID().isEmpty()) {
-        wifiTxt = "Wi-Fi: " + WiFi.SSID();
-    } else if (config.ssid.isEmpty() && config.extraWifiCount == 0) {
-        wifiTxt = "Wi-Fi: pendiente";
-    } else {
-        wifiTxt = "Wi-Fi: desconectado";
-    }
-    const String shortCity = displayCity();
-    const String locTxt =
-        (config.locationSet && !shortCity.isEmpty()) ? ("Clima: " + shortCity) : "Clima: sin ubicación";
-    return wifiTxt + "   ·   " + locTxt;
+lv_obj_t *settingsWifiLabel = nullptr;
+String settingsWifiText() {
+    if (WiFi.status() == WL_CONNECTED && !WiFi.SSID().isEmpty())
+        return "Wi-Fi: " + WiFi.SSID();
+    if (config.ssid.isEmpty() && config.extraWifiCount == 0)
+        return "Wi-Fi: pendiente";
+    return "Wi-Fi: desconectado";
 }
 void buildSettings() {
     page = Page::Settings;
     setupHeader("Ajustes", true);
-    configUiActive.store(false, std::memory_order_release);
-    label(lv_scr_act(), 29, 64, 730, "Configura todo desde la pantalla. El QR es opcional.",
+    label(lv_scr_act(), 29, 70, 730, "Configura todo desde la pantalla. El QR es opcional.",
           &fonts::montserrat16, theme::Muted);
-    button(lv_scr_act(), 28, 96, 356, "Redes Wi-Fi", gotoWifi);
-    button(lv_scr_act(), 408, 96, 364, "Ubicación y clima", gotoLocation);
-    button(lv_scr_act(), 28, 156, 356, "Cuenta LibreLinkUp", gotoLibre);
-    button(lv_scr_act(), 408, 156, 364, "Gestionar usuarios", usersPage);
-    button(lv_scr_act(), 28, 216, 355, "Configurar con QR", gotoQr);
-    button(lv_scr_act(), 408, 216, 364, "Cuenta Diabetes:M", gotoDiabetesM);
-    button(lv_scr_act(), 28, 276, 744, "Comprobar actualizaciones", gotoOta);
-
-    const String wifiAndLoc = settingsWifiAndLocText();
-    settingsWifiLabel = label(lv_scr_act(), 30, 342, 742, wifiAndLoc.c_str(), &fonts::montserrat16);
+    button(lv_scr_act(), 28, 119, 356, "Redes Wi-Fi", gotoWifi);
+    button(lv_scr_act(), 408, 119, 364, "Ubicación y clima", gotoLocation);
+    button(lv_scr_act(), 28, 190, 356, "Cuenta LibreLinkUp", gotoLibre);
+    button(lv_scr_act(), 408, 190, 364, "Gestionar usuarios", usersPage);
+    const String wifiTxt = settingsWifiText();
+    settingsWifiLabel = label(lv_scr_act(), 30, 258, 733, wifiTxt.c_str(), &fonts::montserrat16);
     lv_label_set_long_mode(settingsWifiLabel, LV_LABEL_LONG_DOT);
 
-    auto *libreLbl = label(lv_scr_act(), 30, 368, 742,
+    auto *libreLbl = label(lv_scr_act(), 30, 286, 733,
                            config.libreUser.isEmpty() ? "LibreLinkUp: pendiente"
                                                       : ("LibreLinkUp: " + config.libreUser).c_str(),
                            &fonts::montserrat16);
     lv_label_set_long_mode(libreLbl, LV_LABEL_LONG_DOT);
 
-    auto *dmLbl = label(lv_scr_act(), 30, 394, 742,
+    const String shortCity = displayCity();
+    auto *climaLbl = label(lv_scr_act(), 30, 314, 733,
+                           (config.locationSet && !shortCity.isEmpty())
+                               ? ("Clima: " + shortCity).c_str()
+                               : "Clima: sin ubicación",
+                           &fonts::montserrat16);
+    lv_label_set_long_mode(climaLbl, LV_LABEL_LONG_DOT);
+
+    auto *dmLbl = label(lv_scr_act(), 30, 342, 733,
                         config.diabetesmEnabled
-                            ? ("Diabetes:M: activo (" +
-                               (config.diabetesmUser.isEmpty() ? "sin usuario" : config.diabetesmUser) + ")")
-                                  .c_str()
+                            ? ("Diabetes:M: activo (" + (config.diabetesmUser.isEmpty() ? "sin usuario" : config.diabetesmUser) + ")").c_str()
                             : "Diabetes:M: desactivado",
                         &fonts::montserrat16);
     lv_label_set_long_mode(dmLbl, LV_LABEL_LONG_DOT);
+
+    button(lv_scr_act(), 28, 374, 355, "Configurar con QR", gotoQr);
+    button(lv_scr_act(), 408, 374, 364, "Cuenta Diabetes:M", gotoDiabetesM);
     if (strcmp(configStorageState(), "invalid") == 0 ||
         strcmp(configStorageState(), "unavailable") == 0)
         setupMessage("NVS no legible: haz una copia antes de guardar ajustes.");
@@ -1522,7 +1324,6 @@ void buildSettings() {
         setupMessage(config.ssid.isEmpty() ? "Empieza por Wi-Fi de 2,4 GHz."
                                            : "Los cambios se conservan al apagar el equipo.");
 }
-
 void selectNearby(lv_event_t *e) {
     const size_t i = size_t(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
     if (i >= scanCount)
@@ -2017,7 +1818,7 @@ void updateForecast() {
             lv_obj_set_style_text_align(txt, LV_TEXT_ALIGN_CENTER, 0);
         }
     } else if (forecastView == ForecastView::Summary) {
-        // Card 1: Tiempo en Rango (24h)
+        // Card 1: Tiempo en Rango
         auto *tirCard = lv_obj_create(hoursBox);
         lv_obj_set_pos(tirCard, 8, 9);
         lv_obj_set_size(tirCard, 242, 220);
@@ -2048,11 +1849,11 @@ void updateForecast() {
             lv_label_set_long_mode(subTxt, LV_LABEL_LONG_WRAP);
         } else {
             label(tirCard, 14, 34, 214, "--%", &fonts::montserrat48, theme::Muted);
-            label(tirCard, 14, 94, 214, "Sin lecturas 24h", &fonts::montserrat16, theme::Muted);
-            label(tirCard, 14, 134, 214, "Sincronizando con Diabetes:M / LibreLinkUp...", &fonts::montserrat14, theme::Muted);
+            label(tirCard, 14, 94, 214, "Sin lecturas (24h)", &fonts::montserrat16, theme::Muted);
+            label(tirCard, 14, 134, 214, "Esperando lecturas...", &fonts::montserrat14, theme::Muted);
         }
 
-        // Card 2: Estadísticas 24h (RAM + Diabetes:M)
+        // Card 2: Estadísticas 24h
         auto *statsCard = lv_obj_create(hoursBox);
         lv_obj_set_pos(statsCard, 258, 9);
         lv_obj_set_size(statsCard, 242, 220);
@@ -2077,15 +1878,13 @@ void updateForecast() {
             label(statsCard, 14, 114, 214, minMax, &fonts::montserrat16);
 
             char countStr[48];
-            snprintf(countStr, sizeof(countStr), "Muestras (5 min): %u",
-                     unsigned(snapshot.dailySummary.totalReadings));
+            snprintf(countStr, sizeof(countStr), "Muestras 24h: %u", snapshot.dailySummary.totalReadings);
             label(statsCard, 14, 148, 214, countStr, &fonts::montserrat14, theme::Muted);
-            label(statsCard, 14, 178, 214, "Diabetes:M · RAM (sin desgaste)", &fonts::montserrat14,
-                  theme::Blue);
+            label(statsCard, 14, 178, 214, "Diabetes:M · RAM (sin desgaste)", &fonts::montserrat14, theme::Blue);
         } else {
             label(statsCard, 14, 50, 214, "---", &fonts::montserrat32, theme::Muted);
-            label(statsCard, 14, 110, 214, "Historial en RAM vacío", &fonts::montserrat16, theme::Muted);
-            label(statsCard, 14, 150, 214, "Se sincroniza cada 15 min desde Diabetes:M", &fonts::montserrat14, theme::Muted);
+            label(statsCard, 14, 110, 214, "Historial vacío", &fonts::montserrat16, theme::Muted);
+            label(statsCard, 14, 150, 214, "Se sincroniza de Diabetes:M en RAM", &fonts::montserrat14, theme::Muted);
         }
 
         // Card 3: Paciente y Diabetes:M
@@ -2108,8 +1907,7 @@ void updateForecast() {
         const bool linked = dmLinkHasAccount(config.patientId.c_str(), dmAcc, sizeof(dmAcc));
         if (linked) {
             label(syncCard, 14, 90, 218, "Diabetes:M vinculado", &fonts::montserrat16, theme::GreenBold);
-            const char *syncMode = config.diabetesmSyncFiltered ? "Subida: 15m · TIR: cada 15m"
-                                                                : "Subida: 2m · TIR: cada 15m";
+            const char *syncMode = config.diabetesmSyncFiltered ? "Modo: Filtrado Libre (15m)" : "Modo: Suavizado (2m)";
             label(syncCard, 14, 122, 218, syncMode, &fonts::montserrat14, theme::Muted);
             if (dmAcc[0]) {
                 auto *accTxt = label(syncCard, 14, 154, 218, dmAcc, &fonts::montserrat14, theme::Muted);
@@ -2192,9 +1990,6 @@ void uiTick() {
         break;
     case PendingPage::DiabetesM:
         buildDiabetesM();
-        break;
-    case PendingPage::Ota:
-        buildOta();
         break;
     case PendingPage::None:
         break;
@@ -2343,10 +2138,6 @@ void uiTick() {
                 setupMessage(error);
         }
     }
-    if (page == Page::Ota) {
-        paintOta();
-        return;
-    }
     xSemaphoreTake(stateMutex, portMAX_DELAY);
     memcpy(&snapshot, sharedState, sizeof(snapshot));
     xSemaphoreGive(stateMutex);
@@ -2366,21 +2157,14 @@ void uiTick() {
     }
     if (page == Page::Settings || page == Page::Wifi || page == Page::WifiEdit ||
         page == Page::Location || page == Page::Libre || page == Page::DiabetesM) {
-        if (page == Page::Settings) {
-            if (settingsWifiLabel) {
-                const String wifiAndLoc = settingsWifiAndLocText();
-                if (strcmp(lv_label_get_text(settingsWifiLabel), wifiAndLoc.c_str()) != 0)
-                    lv_label_set_text(settingsWifiLabel, wifiAndLoc.c_str());
-            }
-            if (setupStatus && strcmp(configStorageState(), "invalid") &&
-                strcmp(configStorageState(), "unavailable")) {
-                const char *wifiMessage = config.ssid.isEmpty() ? "Empieza por Wi-Fi de 2,4 GHz."
-                                          : WiFi.status() == WL_CONNECTED
-                                              ? "Wi-Fi conectado. Los cambios están guardados."
-                                              : "Conectando Wi-Fi; espera antes de iniciar sesión.";
-                if (strcmp(lv_label_get_text(setupStatus), wifiMessage))
-                    lv_label_set_text(setupStatus, wifiMessage);
-            }
+        if (page == Page::Settings && setupStatus && strcmp(configStorageState(), "invalid") &&
+            strcmp(configStorageState(), "unavailable")) {
+            const char *wifiMessage = config.ssid.isEmpty() ? "Empieza por Wi-Fi de 2,4 GHz."
+                                      : WiFi.status() == WL_CONNECTED
+                                          ? "Wi-Fi conectado. Los cambios están guardados."
+                                          : "Conectando Wi-Fi; espera antes de iniciar sesión.";
+            if (strcmp(lv_label_get_text(setupStatus), wifiMessage))
+                lv_label_set_text(setupStatus, wifiMessage);
         }
         return;
     }
@@ -2422,14 +2206,10 @@ void uiTick() {
     const gluco::Point *latest = latestReading();
     const int64_t latestEpoch = latest ? latest->epoch : 0;
     const int latestValue = latest ? latest->glucose : 0;
-    const int currentTir =
-        snapshot.dailySummary.valid ? int(std::lround(snapshot.dailySummary.tirPercent * 10.0f)) : -1;
-    const bool summaryChanged = renderedTotalReadings != snapshot.dailySummary.totalReadings ||
-                                renderedTir != currentTir;
     const bool glucoseChanged =
         renderedGlucose != snapshot.glucoseFetched || renderedPoints != snapshot.pointCount ||
         renderedLatestEpoch != latestEpoch || renderedLatestValue != latestValue ||
-        summaryChanged || strcmp(renderedGlucoseError, snapshot.glucoseError);
+        strcmp(renderedGlucoseError, snapshot.glucoseError);
     const int64_t requestStep = snapshot.glucoseRequestStartedMs ? 1 : 0;
     const bool chartChanged =
         renderedGlucose != snapshot.glucoseFetched || renderedPoints != snapshot.pointCount ||
@@ -2513,17 +2293,24 @@ void uiTick() {
             setClock(clockBig, clockDate);
         if (weatherChanged)
             updateWeather(clockWeather, clockSummary, clockIcon, clockGlyph);
-        if (weatherChanged || ((glucoseChanged || summaryChanged) && forecastView == ForecastView::Summary))
+        if (weatherChanged || (glucoseChanged && forecastView == ForecastView::Summary))
             updateForecast();
+    } else if (page == Page::Settings && settingsWifiLabel) {
+        const String connectedSsid = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String();
+        const String wifi =
+            WiFi.status() == WL_CONNECTED
+                ? "Wi-Fi: " + (connectedSsid.isEmpty() ? config.ssid : connectedSsid) + " (" + WiFi.localIP().toString() + ")"
+                : (config.ssid.isEmpty() ? "Wi-Fi: sin configurar"
+                                         : "Wi-Fi: " + config.ssid + " (desconectado)");
+        if (strcmp(lv_label_get_text(settingsWifiLabel), wifi.c_str()) != 0) {
+            lv_label_set_text(settingsWifiLabel, wifi.c_str());
+        }
     }
     renderedGlucose = snapshot.glucoseFetched;
     renderedPoints = snapshot.pointCount;
     renderedLatestEpoch = latestEpoch;
     renderedLatestValue = latestValue;
-    renderedTotalReadings = snapshot.dailySummary.totalReadings;
-    renderedTir = currentTir;
     strlcpy(renderedGlucoseError, snapshot.glucoseError, sizeof(renderedGlucoseError));
     renderedWeather = snapshot.weatherFetched;
     strlcpy(renderedWeatherError, snapshot.weatherError, sizeof(renderedWeatherError));
 }
-

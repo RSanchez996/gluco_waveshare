@@ -1,15 +1,7 @@
 {
-  "version": "2.0.1",
-  "elf_sha256": "7bbc23dbf01444f8ed0331ac09c479bfe9e9857a28f3a7e4186956c75f5ba56a",
-  "build_date": "Oct 18 2026 13:09:01",
+  "version": "2.0.0",
   "target": "ESP32-S3-Touch-LCD-4.3B/BOX",
   "idf": "5.5.5",
-  "changes": [
-    "Versión 2.0.1: Wi-Fi activo real y ciudad abreviada sin superposición en Ajustes",
-    "Listado de cambios OTA con viñetas compatibles con la tipografía de pantalla",
-    "Lecturas de glucosa continuas cada 2 minutos exactos sin pausa al abrir menús",
-    "Cálculo de TIR 24 h desde Diabetes:M en RAM cada 15 min (0 desgaste de Flash)"
-  ],
   "images": [
     {
       "file": "bootloader.bin",
@@ -32,8 +24,8 @@
     {
       "file": "gluco_waveshare.bin",
       "offset": 458752,
-      "size": 1668976,
-      "sha256": "7acf25d42c24e6963effc31f29bf7dc915efccae7ca11f20ca81c4549937abc9"
+      "size": 1643968,
+      "sha256": "1c86ab76c63a339a104c4c4b38b4e34d566e8e22cf3f689ad4d756e93e2a72db"
     }
   ]
 }

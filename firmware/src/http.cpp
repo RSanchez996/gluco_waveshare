@@ -126,25 +126,17 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         }
         Serial.println("[HTTP] Hora NTP sincronizada correctamente");
     }
-    if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         r.error = "Red ocupada";
         return r;
     }
     active.store(true);
-    static uint32_t lastHttpEndMs = 0;
     struct Guard {
         ~Guard() {
-            lastHttpEndMs = millis();
             active.store(false);
             xSemaphoreGive(httpMutex);
         }
     } guard;
-    if (lastHttpEndMs != 0) {
-        const uint32_t elapsed = millis() - lastHttpEndMs;
-        if (elapsed < 750) {
-            vTaskDelay(pdMS_TO_TICKS(750 - elapsed));
-        }
-    }
     if (!bodyBuffer)
         bodyBuffer = static_cast<char *>(
             heap_caps_malloc(kCapacity + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -152,227 +144,198 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         r.error = "Memoria HTTP insuficiente";
         return r;
     }
+    Transfer t;
+    t.limit = std::min(kCapacity, std::max<size_t>(4096, limit));
+    t.deadline = millis() + 50000;
+    esp_http_client_config_t options{};
+    options.url = url.c_str();
+    if (isHttps) {
+        options.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+    options.event_handler = event;
+    options.user_data = &t;
+    options.timeout_ms = 25000;
+    options.buffer_size = 8192;
+    options.buffer_size_tx = 4096;
+    options.addr_type = HTTP_ADDR_TYPE_INET;
+    options.disable_auto_redirect = true;
+    options.keep_alive_enable = false;
+    auto client = esp_http_client_init(&options);
+    if (!client) {
+        r.error = "No se pudo crear HTTP";
+        return r;
+    }
+    struct Cleanup {
+        esp_http_client_handle_t h;
+        ~Cleanup() {
+            if (h) {
+                esp_http_client_close(h);
+                esp_http_client_cleanup(h);
+            }
+        }
+    } cleanup{client};
+    esp_http_client_set_method(client,
+                               strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
+    esp_http_client_set_header(client, "Accept", "application/json");
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    esp_http_client_set_header(client, "Connection", "close");
+    const String userAgent = String("GlucoWaveshare/") + APP_VERSION;
+    esp_http_client_set_header(client, "User-Agent", userAgent.c_str());
+    if (!body.isEmpty()) {
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(client, body.c_str(), body.length());
+    }
     for (const auto &h : headers) {
         if (!safe(h.value)) {
             r.error = "Cabecera no válida";
             return r;
         }
+        esp_http_client_set_header(client, h.name, h.value.c_str());
     }
-
-    Transfer t;
-    t.limit = std::min(kCapacity, std::max<size_t>(4096, limit));
-    const String userAgent = String("GlucoWaveshare/") + APP_VERSION;
     const uint32_t started = millis();
-    esp_err_t lastOpenErr = ESP_OK;
-    int64_t declared = -1;
-
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        if (attempt > 0) {
-            Serial.printf("[HTTP] Reintento %d/2 para %s tras fallo previo (%s)\n", attempt,
-                          url.c_str(), r.error.c_str());
-            vTaskDelay(pdMS_TO_TICKS(1500));
-        }
-
-        t.used = 0;
+    Serial.printf("[HTTP] Abriendo conexion a %s\n", url.c_str());
+    esp_err_t result = esp_http_client_open(client, body.length());
+    if (result != ESP_OK) {
+        const int err = esp_http_client_get_errno(client);
+        Serial.printf("[HTTP] Reintentando tras fallo conexion %s a %s: result=%s (%d), errno=%d\n",
+                      isHttps ? "HTTPS" : "HTTP", url.c_str(), esp_err_to_name(result), int(result), err);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        cleanup.h = nullptr;
+        vTaskDelay(pdMS_TO_TICKS(1500));
         t.deadline = millis() + 45000;
         t.failed = false;
-        t.cookie = "";
-        r.status = 0;
-        r.error = "";
-        r.cookie = "";
-
-        esp_http_client_config_t options{};
-        options.url = url.c_str();
-        if (isHttps) {
-            options.crt_bundle_attach = esp_crt_bundle_attach;
-        }
-        options.event_handler = event;
-        options.user_data = &t;
-        options.timeout_ms = 25000;
-        options.buffer_size = 8192;
-        options.buffer_size_tx = 4096;
-        options.addr_type = HTTP_ADDR_TYPE_INET;
-        options.disable_auto_redirect = false;
-        options.max_redirection_count = 3;
-        options.keep_alive_enable = false;
-
-        auto client = esp_http_client_init(&options);
-        if (!client) {
-            r.error = "No se pudo crear HTTP";
-            continue;
-        }
-        struct Cleanup {
-            esp_http_client_handle_t h;
-            ~Cleanup() {
-                if (h) {
-                    esp_http_client_close(h);
-                    esp_http_client_cleanup(h);
-                }
+        client = esp_http_client_init(&options);
+        if (client) {
+            cleanup.h = client;
+            esp_http_client_set_method(client,
+                                       strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
+            esp_http_client_set_header(client, "Accept", "application/json");
+            esp_http_client_set_header(client, "Accept-Encoding", "identity");
+            esp_http_client_set_header(client, "Connection", "close");
+            esp_http_client_set_header(client, "User-Agent", userAgent.c_str());
+            if (!body.isEmpty()) {
+                esp_http_client_set_header(client, "Content-Type", "application/json");
+                esp_http_client_set_post_field(client, body.c_str(), body.length());
             }
-        } cleanup{client};
-
-        esp_http_client_set_method(client,
-                                   strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
-        esp_http_client_set_header(client, "Accept", "application/json, text/plain, */*");
-        esp_http_client_set_header(client, "Accept-Encoding", "identity");
-        esp_http_client_set_header(client, "Connection", "close");
-        esp_http_client_set_header(client, "User-Agent", userAgent.c_str());
-        if (!body.isEmpty()) {
-            esp_http_client_set_header(client, "Content-Type", "application/json");
-            esp_http_client_set_post_field(client, body.c_str(), body.length());
-        }
-        for (const auto &h : headers) {
-            esp_http_client_set_header(client, h.name, h.value.c_str());
-        }
-
-        if (attempt == 0) {
-            Serial.printf("[HTTP] Abriendo conexion a %s\n", url.c_str());
-        }
-        lastOpenErr = esp_http_client_open(client, body.length());
-        if (lastOpenErr != ESP_OK) {
-            const int err = esp_http_client_get_errno(client);
-            Serial.printf("[HTTP] Fallo conexion %s a %s (intento %d): result=%s (%d), errno=%d\n",
-                          isHttps ? "HTTPS" : "HTTP", url.c_str(), attempt + 1,
-                          esp_err_to_name(lastOpenErr), int(lastOpenErr), err);
-            r.error = "No se pudo conectar " + String(isHttps ? "HTTPS: " : "HTTP: ") +
-                      String(esp_err_to_name(lastOpenErr));
-            continue;
-        }
-
-        size_t sent = 0;
-        bool writeFailed = false;
-        while (sent < body.length() && !runtime::due(millis(), t.deadline)) {
-            const int n = esp_http_client_write(client, body.c_str() + sent, body.length() - sent);
-            if (n <= 0) {
-                writeFailed = true;
-                break;
+            for (const auto &h : headers) {
+                esp_http_client_set_header(client, h.name, h.value.c_str());
             }
-            sent += n;
-            vTaskDelay(1);
+            result = esp_http_client_open(client, body.length());
         }
-        if (writeFailed || sent != body.length()) {
-            r.error = writeFailed ? "POST HTTP incompleto" : "Tiempo del POST HTTP agotado";
-            continue;
-        }
-
-        esp_http_client_set_timeout_ms(client, 25000);
-        declared = esp_http_client_fetch_headers(client);
-        if (declared == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
-            const uint32_t fetchDeadline = millis() + 5000;
-            while (declared == -28679 && !runtime::due(millis(), fetchDeadline)) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-                declared = esp_http_client_fetch_headers(client);
-            }
-        }
-        r.status = esp_http_client_get_status_code(client);
-        r.cookie = t.cookie;
-        if (declared < 0) {
-            const int err = esp_http_client_get_errno(client);
-            Serial.printf("[HTTP] Timeout esperando cabeceras de %s (intento %d): status=%d, errno=%d\n",
-                          url.c_str(), attempt + 1, r.status, err);
-            r.error = "Tiempo de espera HTTPS agotado esperando respuesta";
-            continue;
-        }
-        if (declared > int64_t(t.limit)) {
-            r.error = "Respuesta HTTPS demasiado grande";
+    }
+    if (result != ESP_OK) {
+        const int err = esp_http_client_get_errno(client);
+        Serial.printf("[HTTP] Error conexion %s a %s: result=%s (%d), errno=%d\n",
+                      isHttps ? "HTTPS" : "HTTP", url.c_str(), esp_err_to_name(result), int(result), err);
+        r.error = "No se pudo conectar " + String(isHttps ? "HTTPS: " : "HTTP: ") + String(esp_err_to_name(result));
+        return r;
+    }
+    size_t sent = 0;
+    while (sent < body.length() && !runtime::due(millis(), t.deadline)) {
+        const int n = esp_http_client_write(client, body.c_str() + sent, body.length() - sent);
+        if (n <= 0) {
+            r.error = "POST HTTP incompleto";
             return r;
         }
-
-        t.used = 0;
-        bool readError = false;
-        int zeroReads = 0;
-        size_t chunksRead = 0;
-        while (t.used < t.limit) {
-            if (declared > 0 && int64_t(t.used) >= declared)
-                break;
-            if (runtime::due(millis(), t.deadline)) {
-                Serial.printf("[HTTP] Timeout leyendo body de %s (usados: %u bytes)\n",
-                              url.c_str(), unsigned(t.used));
-                t.failed = true;
-                break;
+        sent += n;
+        vTaskDelay(1);
+    }
+    if (sent != body.length()) {
+        r.error = "Tiempo del POST HTTP agotado";
+        return r;
+    }
+    esp_http_client_set_timeout_ms(client, 25000);
+    int64_t declared = esp_http_client_fetch_headers(client);
+    if (declared == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
+        const uint32_t fetchDeadline = millis() + 4000;
+        while (declared == -28679 && !runtime::due(millis(), fetchDeadline)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            declared = esp_http_client_fetch_headers(client);
+        }
+    }
+    r.status = esp_http_client_get_status_code(client);
+    r.cookie = t.cookie;
+    if (declared < 0) {
+        const int err = esp_http_client_get_errno(client);
+        Serial.printf("[HTTP] Timeout esperando cabeceras de %s: status=%d, errno=%d\n",
+                      url.c_str(), r.status, err);
+        r.error = "Tiempo de espera HTTPS agotado esperando respuesta";
+        return r;
+    }
+    if (declared > int64_t(t.limit)) {
+        r.error = "Respuesta HTTPS demasiado grande";
+        return r;
+    }
+    t.used = 0;
+    bool readError = false;
+    while (t.used < t.limit) {
+        if (declared > 0 && int64_t(t.used) >= declared)
+            break;
+        if (runtime::due(millis(), t.deadline)) {
+            Serial.printf("[HTTP] Timeout leyendo body de %s (usados: %u bytes)\n",
+                          url.c_str(), unsigned(t.used));
+            t.failed = true;
+            break;
+        }
+        const size_t toRead = std::min<size_t>(4096, t.limit - t.used);
+        const int n = esp_http_client_read(client, bodyBuffer + t.used, toRead);
+        if (n < 0) {
+            const int err = esp_http_client_get_errno(client);
+            if (err == 11 /* EAGAIN */ || n == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
             }
-            const size_t toRead = std::min<size_t>(4096, t.limit - t.used);
-            const int n = esp_http_client_read(client, bodyBuffer + t.used, toRead);
-            if (n < 0) {
-                const int err = esp_http_client_get_errno(client);
-                if (err == 11 /* EAGAIN */ || err == 115 /* EINPROGRESS */ ||
-                    n == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
-                    if (t.used > 2 && (bodyBuffer[t.used - 1] == '}' || bodyBuffer[t.used - 1] == '\n'))
-                        break;
-                    vTaskDelay(pdMS_TO_TICKS(40));
-                    continue;
-                }
-                Serial.printf("[HTTP] Error leyendo body de %s: n=%d, errno=%d\n", url.c_str(), n, err);
+            Serial.printf("[HTTP] Error leyendo body de %s: n=%d, errno=%d\n", url.c_str(), n, err);
+            readError = true;
+            break;
+        }
+        if (n == 0) {
+            if (esp_http_client_is_chunked_response(client)) {
+                if (esp_http_client_is_complete_data_received(client))
+                    break;
+                Serial.printf("[HTTP] Conexión cerrada antes de completar chunked en %s (usados: %u bytes)\n",
+                              url.c_str(), unsigned(t.used));
                 readError = true;
                 break;
-            }
-            if (n == 0) {
-                if (esp_http_client_is_chunked_response(client)) {
-                    if (esp_http_client_is_complete_data_received(client))
-                        break;
-                    if (t.used > 2 && (bodyBuffer[t.used - 1] == '}' || bodyBuffer[t.used - 1] == '\n'))
-                        break;
-                    if (++zeroReads <= 25) {
-                        vTaskDelay(pdMS_TO_TICKS(30));
-                        continue;
-                    }
-                    Serial.printf("[HTTP] Conexión cerrada antes de completar chunked en %s (usados: %u bytes)\n",
-                                  url.c_str(), unsigned(t.used));
-                    readError = true;
-                    break;
-                } else if (declared > 0 && int64_t(t.used) < declared) {
-                    if (++zeroReads <= 25) {
-                        vTaskDelay(pdMS_TO_TICKS(30));
-                        continue;
-                    }
-                    Serial.printf("[HTTP] Conexión cerrada antes de recibir todo el body en %s (%u de %lld bytes)\n",
-                                  url.c_str(), unsigned(t.used), declared);
-                    readError = true;
-                    break;
-                } else {
-                    break;
-                }
-            }
-            zeroReads = 0;
-            t.used += n;
-            if (++chunksRead % 4 == 0)
-                vTaskDelay(1);
-            if (esp_http_client_is_chunked_response(client) &&
-                esp_http_client_is_complete_data_received(client))
+            } else if (declared > 0 && int64_t(t.used) < declared) {
+                Serial.printf("[HTTP] Conexión cerrada antes de recibir todo el body en %s (%u de %lld bytes)\n",
+                              url.c_str(), unsigned(t.used), declared);
+                readError = true;
                 break;
+            } else {
+                break;
+            }
         }
-
-        if (readError || t.failed) {
-            r.status = -2;
-            r.error = "Conexión HTTPS interrumpida o incompleta";
-            continue;
-        }
+        t.used += n;
         if (esp_http_client_is_chunked_response(client) &&
-            !esp_http_client_is_complete_data_received(client) &&
-            !(t.used > 2 && (bodyBuffer[t.used - 1] == '}' || bodyBuffer[t.used - 1] == '\n'))) {
-            Serial.printf("[HTTP] Respuesta chunked incompleta de %s: %u bytes\n",
-                          url.c_str(), unsigned(t.used));
-            r.status = -2;
-            r.error = "Respuesta HTTPS incompleta";
-            continue;
-        }
-        if (declared > 0 && int64_t(t.used) < declared) {
-            Serial.printf("[HTTP] Respuesta truncada de %s: %u de %lld bytes\n",
-                          url.c_str(), unsigned(t.used), declared);
-            r.status = -2;
-            r.error = "Respuesta HTTP truncada";
-            continue;
-        }
-        if (t.used == 0 && r.status == 200) {
-            Serial.printf("[HTTP] Respuesta vacía de %s\n", url.c_str());
-            r.status = -2;
-            r.error = "Respuesta HTTP vacía";
-            continue;
-        }
-        break;
+            esp_http_client_is_complete_data_received(client))
+            break;
     }
-
-    if (!r.error.isEmpty() && (r.status <= 0)) {
+    if (readError || t.failed) {
+        r.status = -2;
+        r.error = "Conexión HTTPS interrumpida o incompleta";
+        return r;
+    }
+    if (esp_http_client_is_chunked_response(client) &&
+        !esp_http_client_is_complete_data_received(client)) {
+        Serial.printf("[HTTP] Respuesta chunked incompleta de %s: %u bytes\n",
+                      url.c_str(), unsigned(t.used));
+        r.status = -2;
+        r.error = "Respuesta HTTPS incompleta";
+        return r;
+    }
+    if (declared > 0 && int64_t(t.used) < declared) {
+        Serial.printf("[HTTP] Respuesta truncada de %s: %u de %lld bytes\n",
+                      url.c_str(), unsigned(t.used), declared);
+        r.status = -2;
+        r.error = "Respuesta HTTP truncada";
+        return r;
+    }
+    if (t.used == 0 && r.status == 200) {
+        Serial.printf("[HTTP] Respuesta vacía de %s\n", url.c_str());
+        r.status = -2;
+        r.error = "Respuesta HTTP vacía";
         return r;
     }
     bodyBuffer[t.used] = 0;

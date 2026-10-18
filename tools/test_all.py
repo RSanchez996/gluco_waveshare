@@ -11,4 +11,3 @@ with tempfile.TemporaryDirectory() as d:
 subprocess.run(['node','--check',str(ROOT/'web/app.js')],check=True)
 subprocess.run(['python3',str(ROOT/'tests/install_test.py')],check=True)
 print('OK: history/units/UTC/rollover, 1000 corrupt histories, JavaScript syntax')
-

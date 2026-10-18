@@ -24,7 +24,6 @@ const char WEB_INDEX[] PROGMEM = R"GLUCO_INDEX(<!doctype html>
     <button type="button" data-step="patient">Usuario</button>
     <button type="button" data-step="diabetesm">Diabetes:M</button>
     <button type="button" data-step="location">Ubicación</button>
-    <button type="button" data-step="ota">Actualizar OTA</button>
     <button type="button" data-step="finish">Guardar</button>
   </nav>
   <form id="form">
@@ -35,10 +34,8 @@ const char WEB_INDEX[] PROGMEM = R"GLUCO_INDEX(<!doctype html>
         <button type="button" id="openWifi">Cambiar red Wi-Fi</button>
         <button type="button" class="primary" id="openServices">LibreLinkUp, usuario y clima</button>
         <button type="button" id="openDiabetesM">Cuenta Diabetes:M</button>
-        <button type="button" id="openOta">Actualizar firmware (OTA GitHub)</button>
       </div>
     </section>
-
     <section id="wifi" class="step">
       <p class="eyebrow">CONEXIÓN DE LA PANTALLA</p><h1>Wi-Fi de casa</h1>
       <p>Usa una red de 2,4 GHz. Al guardar, el portal actual se cerrará y la pantalla mostrará el segundo QR dentro de la red doméstica.</p>
@@ -98,23 +95,7 @@ const char WEB_INDEX[] PROGMEM = R"GLUCO_INDEX(<!doctype html>
       <div id="locations" class="choices"></div>
       <input id="city" type="hidden"><input id="latitude" type="hidden"><input id="longitude" type="hidden"><input id="timezone" type="hidden" value="Europe/Madrid">
     </section>
-    <section id="ota" class="step">
-      <p class="eyebrow">FIRMWARE EN RED</p><h1>Actualización OTA desde GitHub</h1>
-      <p>Descarga e instala directamente <code>gluco_waveshare.bin</code> desde el repositorio <strong>RSanchez996/gluco_waveshare (main)</strong> verificando su huella SHA-256.</p>
-      <div id="otaSummary" class="summary">
-        <div><b>Instalado</b><span id="otaCurrent">Cargando...</span></div>
-        <div><b>En GitHub</b><span id="otaRemote">Pulsa Comprobar para consultar</span></div>
-        <div><b>Estado</b><span id="otaStateText">Listo</span></div>
-        <div><b>Cambios</b><span id="otaChanges" style="white-space:pre-line">Pulsa Comprobar actualizaciones para ver los cambios.</span></div>
-      </div>
-      <div class="actions">
-        <button type="button" id="checkOta">Comprobar actualizaciones</button>
-        <button type="button" class="primary" id="installOta" hidden>Sí, instalar actualización</button>
-      </div>
-      <p class="hint" id="otaHint">Tus redes Wi-Fi, cuentas de LibreLinkUp y Diabetes:M se conservan intactas tras actualizar.</p>
-    </section>
     <section id="finish" class="step">
-
       <p class="eyebrow">RESUMEN</p><h1>Guardar y cerrar</h1>
       <div id="summary" class="summary"></div>
       <div class="warning">LibreLinkUp utiliza una interfaz privada que Abbott puede cambiar. Confirma siempre las decisiones y alertas en el sistema oficial del sensor.</div>
@@ -226,52 +207,17 @@ async function scanWifi(){
   finally{wifiScanBusy=false;$('scanWifi').disabled=false}
 }
 $('scanWifi').addEventListener('click',scanWifi);
-let otaTimer=null;
-async function refreshOtaStatus(){
-  try{
-    const s=await api("/api/ota/status");
-    if($("otaCurrent"))$("otaCurrent").textContent=`v${s.current_version||cfg.version} [${s.active_partition||"app0"}] · ${s.current_build||""}`;
-    if($("otaRemote"))$("otaRemote").textContent=s.remote_version?`v${s.remote_version} · ${s.remote_build||"main"}`:"RSanchez996/gluco_waveshare (main)";
-    if($("otaStateText"))$("otaStateText").textContent=s.message||s.state;
-    if($("otaChanges")&&s.changes)$("otaChanges").textContent=s.changes;
-    if($("checkOta"))$("checkOta").disabled=!!s.busy;
-    if($("installOta")){
-      $("installOta").hidden=s.state!=="update_available";
-      $("installOta").disabled=!!s.busy;
-    }
-    if(s.state==="rebooting"){
-      if(otaTimer){clearInterval(otaTimer);otaTimer=null;}
-      message(s.message||"Reiniciando pantalla con el nuevo firmware...");
-    }else if(!s.busy&&otaTimer){
-      clearInterval(otaTimer);otaTimer=null;
-    }
-  }catch{}
-}
-function startOtaPoll(){
-  refreshOtaStatus();
-  if(!otaTimer)otaTimer=setInterval(refreshOtaStatus,1500);
-}
 function step(id){
   document.querySelectorAll(".step").forEach(x=>x.classList.toggle("active",x.id===id));
   document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x.dataset.step===id));
   if(id==="finish")summary();
   if(id==="wifi"&&!wifiScanned)scanWifi();
-  if(id==="ota")refreshOtaStatus();
 }
 document.querySelectorAll("nav button").forEach(x=>x.addEventListener("click",()=>step(x.dataset.step)));
 $("openWifi").addEventListener("click",()=>step("wifi"));
 $("openServices").addEventListener("click",()=>step("libre"));
 $("openDiabetesM").addEventListener("click",()=>step("diabetesm"));
-if($("openOta"))$("openOta").addEventListener("click",()=>step("ota"));
 $("saveDiabetesMStep").addEventListener("click",()=>step("location"));
-if($("checkOta"))$("checkOta").addEventListener("click",async()=>{
-  try{await api("/api/ota/check",{});startOtaPoll();}catch(e){message(e.message,true);}
-});
-if($("installOta"))$("installOta").addEventListener("click",async()=>{
-  if(!confirm("¿Descargar e instalar la última versión desde GitHub y reiniciar la pantalla?"))return;
-  try{await api("/api/ota/install",{});startOtaPoll();}catch(e){message(e.message,true);}
-});
-
 
 const credentials=()=>({user:$("libre_user").value.trim(),password:$("libre_password").value,region:$("libre_region").value,version:$("libre_version").value.trim()});
 

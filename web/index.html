@@ -21,7 +21,6 @@
     <button type="button" data-step="patient">Usuario</button>
     <button type="button" data-step="diabetesm">Diabetes:M</button>
     <button type="button" data-step="location">Ubicación</button>
-    <button type="button" data-step="ota">Actualizar OTA</button>
     <button type="button" data-step="finish">Guardar</button>
   </nav>
   <form id="form">
@@ -32,10 +31,8 @@
         <button type="button" id="openWifi">Cambiar red Wi-Fi</button>
         <button type="button" class="primary" id="openServices">LibreLinkUp, usuario y clima</button>
         <button type="button" id="openDiabetesM">Cuenta Diabetes:M</button>
-        <button type="button" id="openOta">Actualizar firmware (OTA GitHub)</button>
       </div>
     </section>
-
     <section id="wifi" class="step">
       <p class="eyebrow">CONEXIÓN DE LA PANTALLA</p><h1>Wi-Fi de casa</h1>
       <p>Usa una red de 2,4 GHz. Al guardar, el portal actual se cerrará y la pantalla mostrará el segundo QR dentro de la red doméstica.</p>
@@ -95,23 +92,7 @@
       <div id="locations" class="choices"></div>
       <input id="city" type="hidden"><input id="latitude" type="hidden"><input id="longitude" type="hidden"><input id="timezone" type="hidden" value="Europe/Madrid">
     </section>
-    <section id="ota" class="step">
-      <p class="eyebrow">FIRMWARE EN RED</p><h1>Actualización OTA desde GitHub</h1>
-      <p>Descarga e instala directamente <code>gluco_waveshare.bin</code> desde el repositorio <strong>RSanchez996/gluco_waveshare (main)</strong> verificando su huella SHA-256.</p>
-      <div id="otaSummary" class="summary">
-        <div><b>Instalado</b><span id="otaCurrent">Cargando...</span></div>
-        <div><b>En GitHub</b><span id="otaRemote">Pulsa Comprobar para consultar</span></div>
-        <div><b>Estado</b><span id="otaStateText">Listo</span></div>
-        <div><b>Cambios</b><span id="otaChanges" style="white-space:pre-line">Pulsa Comprobar actualizaciones para ver los cambios.</span></div>
-      </div>
-      <div class="actions">
-        <button type="button" id="checkOta">Comprobar actualizaciones</button>
-        <button type="button" class="primary" id="installOta" hidden>Sí, instalar actualización</button>
-      </div>
-      <p class="hint" id="otaHint">Tus redes Wi-Fi, cuentas de LibreLinkUp y Diabetes:M se conservan intactas tras actualizar.</p>
-    </section>
     <section id="finish" class="step">
-
       <p class="eyebrow">RESUMEN</p><h1>Guardar y cerrar</h1>
       <div id="summary" class="summary"></div>
       <div class="warning">LibreLinkUp utiliza una interfaz privada que Abbott puede cambiar. Confirma siempre las decisiones y alertas en el sistema oficial del sensor.</div>
