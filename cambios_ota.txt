@@ -1,3 +1,4 @@
-Cálculo de TIR 24 h desde Diabetes:M en RAM cada 15 min (sin desgaste de Flash)
-Actualización OTA desde Ajustes con confirmación previa y resumen de cambios
-Conexiones HTTPS reforzadas con reintentos automáticos y control de tiempos TLS
+Versión 2.0.1: Wi-Fi activo real y ciudad abreviada sin superposición en Ajustes
+Listado de cambios OTA con viñetas compatibles con la tipografía de pantalla
+Lecturas de glucosa continuas cada 2 minutos exactos sin pausa al abrir menús
+Cálculo de TIR 24 h desde Diabetes:M en RAM cada 15 min (0 desgaste de Flash)

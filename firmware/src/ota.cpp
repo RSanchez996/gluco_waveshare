@@ -70,9 +70,9 @@ ManifestInfo cachedManifest{};
 bool hasCachedManifest = false;
 
 constexpr const char *kDefaultChanges =
-    "• Cálculo de TIR 24 h desde Diabetes:M en RAM cada 15 min (0 desgaste Flash)\n"
-    "• Actualización OTA desde Ajustes con confirmación y resumen de cambios\n"
-    "• Conexiones HTTPS reforzadas con reintentos automáticos y control TLS";
+    "- Cálculo de TIR 24 h desde Diabetes:M en RAM cada 15 min (sin desgaste de Flash)\n"
+    "- Actualización OTA desde Ajustes con confirmación previa y resumen de cambios\n"
+    "- Lecturas de glucosa constantes cada 2 min y resumen de Ajustes corregido";
 
 // Reads the first 288 bytes of gluco_waveshare.bin over HTTPS if manifest.json
 // does not explicitly include elf_sha256.
@@ -193,15 +193,26 @@ bool fetchManifest(ManifestInfo &info, String &error) {
             const char *line = item | "";
             if (!line || !*line)
                 continue;
+            while (*line == ' ' || *line == '-' || *line == '*')
+                ++line;
+            if (strncmp(line, "\xE2\x80\xA2", 3) == 0) {
+                line += 3;
+                while (*line == ' ')
+                    ++line;
+            }
+            if (!*line)
+                continue;
             if (!info.changes.isEmpty())
                 info.changes += "\n";
-            if (strncmp(line, "•", strlen("•")) != 0 && line[0] != '-')
-                info.changes += "• ";
+            info.changes += "- ";
             info.changes += line;
         }
     } else if (d["changelog"].is<const char *>()) {
         info.changes = d["changelog"] | "";
     }
+    info.changes.replace("\xE2\x80\xA2", "-");
+    info.changes.replace("\xC2\xAB", "'");
+    info.changes.replace("\xC2\xBB", "'");
     if (info.changes.isEmpty()) {
         info.changes = kDefaultChanges;
     }
@@ -565,7 +576,7 @@ void otaInit() {
     }
     strlcpy(currentStatus.activePartition, runningPart ? runningPart->label : "app0",
             sizeof(currentStatus.activePartition));
-    strlcpy(currentStatus.message, "Pulsa «Comprobar actualizaciones» para buscar nuevas versiones.",
+    strlcpy(currentStatus.message, "Pulsa 'Comprobar actualizaciones' para buscar nuevas versiones.",
             sizeof(currentStatus.message));
     strlcpy(currentStatus.changes, kDefaultChanges, sizeof(currentStatus.changes));
 }

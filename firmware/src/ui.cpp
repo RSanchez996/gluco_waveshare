@@ -58,7 +58,7 @@ lv_obj_t *keyboard = nullptr, *keyboardToggle = nullptr, *keyboardLastInput = nu
          *diabetesmMode = nullptr, *setupStatus = nullptr;
 lv_obj_t *otaCurrentLabel = nullptr, *otaRemoteLabel = nullptr, *otaStatusLabel = nullptr,
          *otaChangesLabel = nullptr, *otaProgressBar = nullptr, *otaCheckBtn = nullptr,
-         *otaInstallBtn = nullptr, *otaCancelBtn = nullptr;
+         *otaInstallBtn = nullptr, *otaCancelBtn = nullptr, *settingsWifiLabel = nullptr;
 WifiScanEntry scanEntries[16]{};
 size_t scanCount = 0;
 LocationChoice locationEntries[8]{};
@@ -834,7 +834,8 @@ void setupHeader(const char *title, bool root = false) {
         cityInput = locationList = loginUser = loginPass = loginRegion = loginList = diabetesmUser =
             diabetesmPass = diabetesmSwitch = diabetesmPatient = diabetesmMode = setupStatus =
                 otaCurrentLabel = otaRemoteLabel = otaStatusLabel = otaChangesLabel =
-                    otaProgressBar = otaCheckBtn = otaInstallBtn = otaCancelBtn = nullptr;
+                    otaProgressBar = otaCheckBtn = otaInstallBtn = otaCancelBtn =
+                        settingsWifiLabel = nullptr;
     lv_obj_clean(lv_scr_act());
     base(lv_scr_act());
     label(lv_scr_act(), 26, 16, 680, title, &fonts::montserrat28);
@@ -1415,6 +1416,7 @@ void buildOta() {
 
     otaCurrentLabel =
         label(card, 18, 12, 708, "Instalado: ...", &fonts::montserrat14, theme::Muted);
+    lv_label_set_long_mode(otaCurrentLabel, LV_LABEL_LONG_DOT);
     otaStatusLabel = label(card, 18, 36, 708, "Comprobando actualizaciones en GitHub...",
                            &fonts::montserrat16, theme::Blue);
     lv_label_set_long_mode(otaStatusLabel, LV_LABEL_LONG_WRAP);
@@ -1465,6 +1467,20 @@ void buildOta() {
                      ? "Se verifica el SHA-256 antes de instalar. Tus cuentas y Wi-Fi se conservan."
                      : "Conecta primero el Wi-Fi para buscar actualizaciones.");
 }
+String settingsWifiAndLocText() {
+    String wifiTxt;
+    if (WiFi.status() == WL_CONNECTED && !WiFi.SSID().isEmpty()) {
+        wifiTxt = "Wi-Fi: " + WiFi.SSID();
+    } else if (config.ssid.isEmpty() && config.extraWifiCount == 0) {
+        wifiTxt = "Wi-Fi: pendiente";
+    } else {
+        wifiTxt = "Wi-Fi: desconectado";
+    }
+    const String shortCity = displayCity();
+    const String locTxt =
+        (config.locationSet && !shortCity.isEmpty()) ? ("Clima: " + shortCity) : "Clima: sin ubicación";
+    return wifiTxt + "   ·   " + locTxt;
+}
 void buildSettings() {
     page = Page::Settings;
     setupHeader("Ajustes", true);
@@ -1479,21 +1495,24 @@ void buildSettings() {
     button(lv_scr_act(), 408, 216, 364, "Cuenta Diabetes:M", gotoDiabetesM);
     button(lv_scr_act(), 28, 276, 744, "Comprobar actualizaciones", gotoOta);
 
-    String wifiAndLoc = (config.ssid.isEmpty() ? "Wi-Fi: pendiente" : ("Wi-Fi: " + config.ssid)) +
-                        "   ·   " +
-                        (config.locationSet ? ("Clima: " + config.city) : "Clima: sin ubicación");
-    label(lv_scr_act(), 30, 342, 742, wifiAndLoc.c_str(), &fonts::montserrat16);
-    label(lv_scr_act(), 30, 368, 742,
-          config.libreUser.isEmpty() ? "LibreLinkUp: pendiente"
-                                     : ("LibreLinkUp: " + config.libreUser).c_str(),
-          &fonts::montserrat16);
-    label(lv_scr_act(), 30, 394, 742,
-          config.diabetesmEnabled
-              ? ("Diabetes:M: activo (" +
-                 (config.diabetesmUser.isEmpty() ? "sin usuario" : config.diabetesmUser) + ")")
-                    .c_str()
-              : "Diabetes:M: desactivado",
-          &fonts::montserrat16);
+    const String wifiAndLoc = settingsWifiAndLocText();
+    settingsWifiLabel = label(lv_scr_act(), 30, 342, 742, wifiAndLoc.c_str(), &fonts::montserrat16);
+    lv_label_set_long_mode(settingsWifiLabel, LV_LABEL_LONG_DOT);
+
+    auto *libreLbl = label(lv_scr_act(), 30, 368, 742,
+                           config.libreUser.isEmpty() ? "LibreLinkUp: pendiente"
+                                                      : ("LibreLinkUp: " + config.libreUser).c_str(),
+                           &fonts::montserrat16);
+    lv_label_set_long_mode(libreLbl, LV_LABEL_LONG_DOT);
+
+    auto *dmLbl = label(lv_scr_act(), 30, 394, 742,
+                        config.diabetesmEnabled
+                            ? ("Diabetes:M: activo (" +
+                               (config.diabetesmUser.isEmpty() ? "sin usuario" : config.diabetesmUser) + ")")
+                                  .c_str()
+                            : "Diabetes:M: desactivado",
+                        &fonts::montserrat16);
+    lv_label_set_long_mode(dmLbl, LV_LABEL_LONG_DOT);
     if (strcmp(configStorageState(), "invalid") == 0 ||
         strcmp(configStorageState(), "unavailable") == 0)
         setupMessage("NVS no legible: haz una copia antes de guardar ajustes.");
@@ -2345,14 +2364,21 @@ void uiTick() {
     }
     if (page == Page::Settings || page == Page::Wifi || page == Page::WifiEdit ||
         page == Page::Location || page == Page::Libre || page == Page::DiabetesM) {
-        if (page == Page::Settings && setupStatus && strcmp(configStorageState(), "invalid") &&
-            strcmp(configStorageState(), "unavailable")) {
-            const char *wifiMessage = config.ssid.isEmpty() ? "Empieza por Wi-Fi de 2,4 GHz."
-                                      : WiFi.status() == WL_CONNECTED
-                                          ? "Wi-Fi conectado. Los cambios están guardados."
-                                          : "Conectando Wi-Fi; espera antes de iniciar sesión.";
-            if (strcmp(lv_label_get_text(setupStatus), wifiMessage))
-                lv_label_set_text(setupStatus, wifiMessage);
+        if (page == Page::Settings) {
+            if (settingsWifiLabel) {
+                const String wifiAndLoc = settingsWifiAndLocText();
+                if (strcmp(lv_label_get_text(settingsWifiLabel), wifiAndLoc.c_str()) != 0)
+                    lv_label_set_text(settingsWifiLabel, wifiAndLoc.c_str());
+            }
+            if (setupStatus && strcmp(configStorageState(), "invalid") &&
+                strcmp(configStorageState(), "unavailable")) {
+                const char *wifiMessage = config.ssid.isEmpty() ? "Empieza por Wi-Fi de 2,4 GHz."
+                                          : WiFi.status() == WL_CONNECTED
+                                              ? "Wi-Fi conectado. Los cambios están guardados."
+                                              : "Conectando Wi-Fi; espera antes de iniciar sesión.";
+                if (strcmp(lv_label_get_text(setupStatus), wifiMessage))
+                    lv_label_set_text(setupStatus, wifiMessage);
+            }
         }
         return;
     }

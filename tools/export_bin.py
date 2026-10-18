@@ -20,7 +20,7 @@ shutil.copyfile(BUILD / "gluco_waveshare.elf", OUT / "gluco_waveshare.elf")
 
 app_bin = (OUT / "gluco_waveshare.bin").read_bytes()
 app_desc = app_bin[32:32 + 256]
-version = app_desc[16:48].split(b"\x00")[0].decode("utf-8", errors="replace") or "2.0.0"
+version = app_desc[16:48].split(b"\x00")[0].decode("utf-8", errors="replace") or "2.0.1"
 compile_time = app_desc[80:96].split(b"\x00")[0].decode("utf-8", errors="replace")
 compile_date = app_desc[96:112].split(b"\x00")[0].decode("utf-8", errors="replace")
 elf_sha256 = app_desc[144:176].hex()

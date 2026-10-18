@@ -239,7 +239,8 @@ void task(void *) {
             }
         }
 
-        if (portalActive() || configUiActive.load(std::memory_order_acquire)) {
+        if (portalMode() == PortalMode::WifiAccessPoint ||
+            portalMode() == PortalMode::WaitingForWifi) {
             portalWasActive = true;
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
@@ -422,10 +423,11 @@ void task(void *) {
         const bool libreGapReady = !lastLibreRequest || tick - lastLibreRequest >= kLibreGapMs;
         const bool libreReady = !libreBlockedUntil || due(tick, libreBlockedUntil);
         if (tlsGapReady && libreGapReady && libreReady && due(tick, glucoseDue) && !config.patientId.isEmpty()) {
+            const uint32_t pollStarted = millis();
             appDiagnosticStage("Preparando gráfica Libre");
             Serial.println("[RED 1/1] Consultando glucosa LibreLinkUp");
             text(work->glucoseError, "Consultando gráfica LibreLinkUp...");
-            work->glucoseRequestStartedMs = millis();
+            work->glucoseRequestStartedMs = pollStarted;
             publish();
             const uint32_t wait = libre.read(*work);
             work->glucoseRequestStartedMs = 0;
@@ -495,7 +497,9 @@ void task(void *) {
                                          ? std::max<uint32_t>(45, wait)
                                          : std::max<uint32_t>(120, wait);
             glucoseShortRetries = transient ? std::min<uint8_t>(3, glucoseShortRetries + 1) : 0;
-            glucoseDue = lastTlsRequest + seconds * 1000;
+            glucoseDue = pollStarted + seconds * 1000;
+            if (due(lastTlsRequest, glucoseDue))
+                glucoseDue = lastTlsRequest + 5000;
             if (work->glucoseError[0] && wait > 120)
                 libreBlockedUntil = lastTlsRequest + wait * 1000;
             else if (!work->glucoseError[0])

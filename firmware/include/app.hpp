@@ -7,7 +7,7 @@
 #include <freertos/semphr.h>
 #include <lvgl.h>
 
-constexpr const char *APP_VERSION = "2.0.0";
+constexpr const char *APP_VERSION = "2.0.1";
 constexpr size_t MAX_CONNECTIONS = 12;
 constexpr size_t MAX_EXTRA_WIFI = 4;
 enum class PortalMode : uint8_t { Off, WifiAccessPoint, WaitingForWifi, LocalNetwork };
