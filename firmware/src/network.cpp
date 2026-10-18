@@ -473,6 +473,12 @@ void task(void *) {
                                          : std::max<uint32_t>(120, wait);
             glucoseShortRetries = transient ? std::min<uint8_t>(3, glucoseShortRetries + 1) : 0;
             glucoseDue = lastTlsRequest + seconds * 1000;
+            if (glucoseShortRetries >= 2) {
+                Serial.println("[WIFI] Reintentos fallidos; reconectando enlace Wi-Fi para restablecer sockets...");
+                WiFi.disconnect();
+                connectedAt = 0;
+                scheduleReady = false;
+            }
             if (work->glucoseError[0] && wait > 120)
                 libreBlockedUntil = lastTlsRequest + wait * 1000;
             else if (!work->glucoseError[0])

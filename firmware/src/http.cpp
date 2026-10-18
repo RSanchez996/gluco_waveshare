@@ -154,7 +154,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     }
     options.event_handler = event;
     options.user_data = &t;
-    options.timeout_ms = 25000;
+    options.timeout_ms = 15000;
     options.buffer_size = 8192;
     options.buffer_size_tx = 4096;
     options.addr_type = HTTP_ADDR_TYPE_INET;

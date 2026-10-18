@@ -1323,6 +1323,7 @@ void buildSettings() {
     else
         setupMessage(config.ssid.isEmpty() ? "Empieza por Wi-Fi de 2,4 GHz."
                                            : "Los cambios se conservan al apagar el equipo.");
+    configUiActive.store(false, std::memory_order_release);
 }
 void selectNearby(lv_event_t *e) {
     const size_t i = size_t(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e)));
