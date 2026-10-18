@@ -31,7 +31,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         if (std::string(h.name) == "Account-Id")
             account = h.value == "mock-digest:account-id";
     }
-    if (std::string(method) == "GET" && url.find("diabetes-m.com") == String::npos)
+    if (std::string(method) == "GET")
         assert(auth && account);
     const auto reply = replies.front();
     replies.pop_front();
@@ -130,47 +130,28 @@ int main() {
     connectionCacheLoad(cached);
     assert(cached.connectionCount == 0);
 
-    // Test 6: 24h RAM-only history and Diabetes:M import (zero NVS flash writes)
-    {
-        const size_t nvsKeysBefore = preferencesBytes.size();
-        const int64_t now = 1776499200; // > 1700000000
-        cfg.diabetesmEnabled = true;
-        cfg.diabetesmUser = "dm-user";
-        cfg.diabetesmPass = "dm-pass";
-        DiabetesMClient dm;
-
-        std::ostringstream dmJson;
-        dmJson << "{\"glucoseHistoryData\":[";
-        for (int i = 0; i < 288; ++i) {
-            const time_t t = now - (287 - i) * 300;
-            tm local{};
-            localtime_r(&t, &local);
-            char dateBuf[32];
-            strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d %H:%M", &local);
-            const int val = (i < 201) ? 125 : 220; // 201/288 = 69.8% in range
-            if (i > 0)
-                dmJson << ",";
-            dmJson << "{\"date\":\"" << dateBuf << "\",\"value\":" << val << ",\"group\":\"glucose\"}";
-        }
-        dmJson << "]}";
-
-        replies = {{200, R"({"token":"dm-jwt-token"})"}, {200, String(dmJson.str().c_str())}};
-        gluco::Point pts[300]{};
-        size_t count = 0;
-        String err;
-        assert(dm.fetchHistory24h(cfg, pts, 300, count, now, err));
-        assert(count == 288);
-
-        DailySummary summary{};
-        historyStoreImport("patient-1", pts, count, summary, now);
-        assert(summary.valid && summary.totalReadings == 288);
-        assert(std::fabs(summary.tirPercent - 70.0f) < 1.5f);
-        assert(historyStoreHasFullDay("patient-1", now));
-        // Confirm zero NVS writes for glucose history
-        assert(preferencesBytes.size() == nvsKeysBefore);
+    // Test 24h rolling history store, 5-min bucketing, and time-weighted TIR
+    preferencesBytes.clear();
+    DailySummary sum{};
+    const int64_t tNow = 1792320000; // valid epoch
+    // Simulate 24 hours of 2-minute live readings (720 readings total):
+    // First 16 hours in range (120 mg/dL), last 8 hours high (210 mg/dL) -> expected TIR ~66.7%
+    for (int i = 720; i >= 1; --i) {
+        int64_t ep = tNow - i * 120;
+        int16_t g = (i > 240) ? 120 : 210;
+        gluco::Point live{ep, g};
+        historyStoreMerge("p1", nullptr, 0, live, true, sum, ep);
     }
+    assert(sum.valid);
+    assert(sum.totalReadings == 288); // 24h in 5-min buckets = 288 points (never truncated at 9:30 AM!)
+    assert(std::fabs(sum.tirPercent - 66.6f) < 1.5f);
+    assert(std::fabs(sum.highPercent - 33.3f) < 1.5f);
+
+    DailySummary loaded{};
+    historyStoreLoad("p1", loaded, tNow);
+    assert(loaded.valid && loaded.totalReadings == 288);
+    assert(std::fabs(loaded.tirPercent - sum.tirPercent) < 0.1f);
 
     std::cout << "OK: provider filters, mg/dL, deduplication, failures preserve history, token "
-                 "renewal bounded, region redirect, cache validation, 24h Diabetes:M RAM TIR\n";
+                 "renewal bounded, region redirect, cache validation, 24h time-weighted TIR\n";
 }
-

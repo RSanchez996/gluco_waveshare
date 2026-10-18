@@ -158,10 +158,10 @@ void task(void *) {
     LibreClient libre;
     DiabetesMClient diabetesm;
     GlucoseSmoother smoother;
-    uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0, dmHistoryDue = 0;
+    uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0;
     uint32_t connectedAt = 0, disconnectedAt = 0, lastTlsRequest = 0, lastLibreRequest = 0,
              reconnectAt = 0, libreBlockedUntil = 0;
-    bool scheduleReady = false, portalWasActive = false;
+    bool scheduleReady = false, portalWasActive = false, dmHistorySynced = false;
     uint8_t glucoseShortRetries = 0;
     String accountKey = net::sha256(config.libreUser + "\n" + config.librePass + "\n" +
                                     config.libreRegion + "\n" + config.libreVersion);
@@ -191,10 +191,10 @@ void task(void *) {
             work->glucoseFetched = 0;
             work->glucoseRequestStartedMs = 0;
             diabetesm.resetSession();
+            dmHistorySynced = false;
             smoother.reset();
             text(work->glucoseError, "Usuario cambiado; esperando una lectura nueva...");
             glucoseDue = millis() + 1000;
-            dmHistoryDue = millis() + 8000;
             libreBlockedUntil = 0;
             glucoseShortRetries = 0;
             publish();
@@ -216,6 +216,7 @@ void task(void *) {
                     work->direction[0] = 0;
                     work->glucoseFetched = 0;
                     diabetesm.resetSession();
+                    dmHistorySynced = false;
                     smoother.reset();
                     historyStoreLoad(selection.id, work->dailySummary, time(nullptr));
                 }
@@ -224,7 +225,6 @@ void task(void *) {
                 text(work->glucoseError, msg.c_str());
                 libreBlockedUntil = 0;
                 glucoseDue = millis() + 1000;
-                dmHistoryDue = millis() + 8000;
                 Serial.printf("[LIBRE] Usuario activo: %s | Diabetes:M: %s\n", selection.name,
                               work->activePatientDmLinked ? work->activePatientDmUser : "no vinculado");
                 publish();
@@ -291,10 +291,10 @@ void task(void *) {
             if (currentDiabetesMKey != diabetesmKey) {
                 diabetesmKey = currentDiabetesMKey;
                 diabetesm.resetSession();
+                dmHistorySynced = false;
                 smoother.reset();
                 if (work->currentValid && config.diabetesmEnabled) {
                     glucoseDue = millis();
-                    dmHistoryDue = millis() + 8000;
                 }
             }
         }
@@ -405,7 +405,6 @@ void task(void *) {
                                                         : start + 1000;
             glucoseDue = hasPatient ? start + 1000 : start + 15000;
             weatherDue = config.locationSet ? (work->weatherValid ? start + 30 * 60 * 1000 : start + 4000) : 0;
-            dmHistoryDue = hasPatient ? start + 12000 : 0;
             if (!config.locationSet)
                 text(work->weatherError, "Configura una ubicación en Ajustes");
             appDiagnosticStage("Esperando consulta Libre");
@@ -444,6 +443,25 @@ void task(void *) {
                     String dmError;
                     diabetesm.uploadGlucose(pointToUpload, config, dmError);
                 }
+                if (!dmHistorySynced) {
+                    dmHistorySynced = true;
+                    const int64_t nowEpoch = time(nullptr);
+                    if (historyStoreCount24h(config.patientId.c_str(), nowEpoch) < 220) {
+                        auto *dmPts = static_cast<gluco::Point *>(heap_caps_malloc(
+                            300 * sizeof(gluco::Point), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                        if (dmPts) {
+                            size_t dmCount = 0;
+                            String dmErr;
+                            vTaskDelay(pdMS_TO_TICKS(500));
+                            if (diabetesm.fetchHistory24h(config, dmPts, 300, dmCount, nowEpoch, dmErr) &&
+                                dmCount > 0) {
+                                historyStoreImport(config.patientId.c_str(), dmPts, dmCount,
+                                                   work->dailySummary, nowEpoch);
+                            }
+                            heap_caps_free(dmPts);
+                        }
+                    }
+                }
             }
             publish();
             appDiagnosticStage("Esperando siguiente consulta");
@@ -478,29 +496,6 @@ void task(void *) {
             publish();
             lastTlsRequest = millis();
             weatherDue = lastTlsRequest + std::max<uint32_t>(work->weatherValid ? 1800 : 45, wait) * 1000;
-        } else if (tlsGapReady && due(tick, dmHistoryDue) && config.diabetesmEnabled &&
-                   !config.patientId.isEmpty() && dmLinkHasAccount(config.patientId.c_str())) {
-            constexpr size_t kMaxDmHist = 512;
-            auto *dmPts = static_cast<gluco::Point *>(
-                heap_caps_malloc(kMaxDmHist * sizeof(gluco::Point), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            size_t dmCount = 0;
-            String dmHistErr;
-            const int64_t nowEp = time(nullptr);
-            bool ok = false;
-            if (dmPts) {
-                ok = diabetesm.fetchHistory24h(config, dmPts, kMaxDmHist, dmCount, nowEp, dmHistErr);
-                if (ok && dmCount > 0) {
-                    historyStoreImport(config.patientId.c_str(), dmPts, dmCount, work->dailySummary, nowEp);
-                    if (work->currentValid || work->pointCount > 0) {
-                        historyStoreMerge(config.patientId.c_str(), work->points, work->pointCount,
-                                          work->current, work->currentValid, work->dailySummary, nowEp);
-                    }
-                    publish();
-                }
-                heap_caps_free(dmPts);
-            }
-            lastTlsRequest = millis();
-            dmHistoryDue = lastTlsRequest + (ok ? 20 * 60 * 1000UL : 5 * 60 * 1000UL);
         }
         vTaskDelay(pdMS_TO_TICKS(portalActive() ? 50 : 250));
     }

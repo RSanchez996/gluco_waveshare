@@ -587,36 +587,10 @@ bool DiabetesMClient::uploadGlucose(const gluco::Point &point, const Config &con
     return true;
 }
 
-namespace {
-bool parseDiabetesMDate(const char *s, int64_t &outEpoch) {
-    if (!s || strlen(s) < 16)
-        return false;
-    int year = 0, month = 0, day = 0, hour = 0, minute = 0;
-    if (sscanf(s, "%d-%d-%d %d:%d", &year, &month, &day, &hour, &minute) != 5)
-        return false;
-    if (year < 2024 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 ||
-        minute < 0 || minute > 59)
-        return false;
-    tm local{};
-    local.tm_year = year - 1900;
-    local.tm_mon = month - 1;
-    local.tm_mday = day;
-    local.tm_hour = hour;
-    local.tm_min = minute;
-    local.tm_sec = 0;
-    local.tm_isdst = -1;
-    const time_t t = mktime(&local);
-    if (t < 1700000000)
-        return false;
-    outEpoch = int64_t(t);
-    return true;
-}
-} // namespace
-
-bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, size_t capacity,
-                                      size_t &count, int64_t nowEpoch, String &error) {
-    count = 0;
-    if (!out || !capacity || nowEpoch < 1700000000)
+bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, size_t maxOut,
+                                      size_t &outCount, int64_t now, String &error) {
+    outCount = 0;
+    if (!out || !maxOut || now < 1700000000)
         return false;
     if (!config.diabetesmEnabled || config.diabetesmUser.isEmpty() || config.diabetesmPass.isEmpty())
         return false;
@@ -626,12 +600,13 @@ bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, s
             return false;
     }
 
-    const int64_t fromMs = (nowEpoch - 26 * 3600) * 1000LL;
-    const int64_t toMs = (nowEpoch + 3600) * 1000LL;
-    char urlBuf[192];
+    const long long toMs = static_cast<long long>(now) * 1000LL;
+    const long long fromMs = static_cast<long long>(now - 24 * 3600) * 1000LL;
+    char urlBuf[180];
     snprintf(urlBuf, sizeof(urlBuf),
              "https://analytics.diabetes-m.com/api/v1/charts/glucose_history?viewIndex=4&fromDate=%lld&toDate=%lld",
-             static_cast<long long>(fromMs), static_cast<long long>(toMs));
+             fromMs, toMs);
+    const String url(urlBuf);
 
     Doc filter(512);
     JsonArray arrFilter = filter.createNestedArray("glucoseHistoryData");
@@ -640,7 +615,6 @@ bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, s
     itemFilter["value"] = true;
     itemFilter["group"] = true;
 
-    Doc res(96 * 1024);
     std::initializer_list<net::Header> hdrs = {
         {"Authorization", "Bearer " + token},
         {"Origin", "https://analytics.diabetes-m.com"},
@@ -648,10 +622,9 @@ bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, s
         {"Cookie", cookies}
     };
 
-    Serial.println("[DIABETES-M] Descargando historial de 24 h para cálculo de TIR...");
-    net::Response r = net::request(String(urlBuf), res, "GET", "", hdrs, 256 * 1024,
-                                   filter.as<JsonVariantConst>());
-
+    Doc res(96 * 1024);
+    appDiagnosticStage("Diabetes:M: histórico 24h");
+    net::Response r = net::request(url, res, "GET", "", hdrs, 256 * 1024, filter.as<JsonVariantConst>());
     if (r.status == 401) {
         token = "";
         cookies = "";
@@ -664,48 +637,57 @@ bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, s
             {"Referer", "https://analytics.diabetes-m.com/"},
             {"Cookie", cookies}
         };
-        r = net::request(String(urlBuf), res, "GET", "", retryHdrs, 256 * 1024,
-                         filter.as<JsonVariantConst>());
+        r = net::request(url, res, "GET", "", retryHdrs, 256 * 1024, filter.as<JsonVariantConst>());
     }
 
     if (r.status != 200 || !res["glucoseHistoryData"].is<JsonArray>()) {
-        error = "Diabetes:M historial: " + (r.error.isEmpty() ? String("HTTP ") + String(r.status) : r.error);
-        Serial.printf("[DIABETES-M] Error descargando historial 24h (%d): %s\n", r.status, error.c_str());
+        error = "Diabetes:M histórico: " + (r.error.isEmpty() ? String("HTTP ") + String(r.status) : r.error);
+        Serial.printf("[DIABETES-M] Error descargando histórico 24h (%d): %s\n", r.status, error.c_str());
         return false;
     }
 
-    const int64_t cutoff = nowEpoch - 24 * 3600;
-    constexpr uint32_t kBucketSec = 5 * 60;
-    for (JsonObjectConst item : res["glucoseHistoryData"].as<JsonArrayConst>()) {
-        const char *grp = item["group"] | "";
+    const int64_t cutoff = now - 24 * 3600;
+    for (JsonObjectConst p : res["glucoseHistoryData"].as<JsonArrayConst>()) {
+        const char *grp = p["group"] | "";
         if (strcmp(grp, "glucose") != 0)
             continue;
-        const char *dateStr = item["date"] | "";
-        int64_t ep = 0;
-        if (!parseDiabetesMDate(dateStr, ep))
+        const char *dateStr = p["date"] | "";
+        const double val = p["value"] | 0.0;
+        int y = 0, m = 0, d = 0, hh = 0, mm = 0;
+        if (sscanf(dateStr, "%d-%d-%d %d:%d", &y, &m, &d, &hh, &mm) != 5)
             continue;
-        if (ep < cutoff || ep > nowEpoch + 600)
+        tm local{};
+        local.tm_year = y - 1900;
+        local.tm_mon = m - 1;
+        local.tm_mday = d;
+        local.tm_hour = hh;
+        local.tm_min = mm;
+        local.tm_sec = 0;
+        local.tm_isdst = -1;
+        const time_t ep = mktime(&local);
+        if (ep < cutoff || ep > now + 120)
             continue;
-        const double rawVal = item["value"] | 0.0;
-        const int mgdl = (rawVal > 0.0 && rawVal < 35.0) ? int(std::lround(rawVal * 18.0182))
-                                                         : int(std::lround(rawVal));
-        if (mgdl < 20 || mgdl > 1000)
+        // Convert if value is stored in mmol/L (< 35) vs mg/dL
+        const int g = (val > 0.0 && val < 35.0) ? int(std::lround(val * 18.0182)) : int(std::lround(val));
+        if (g < 20 || g > 1000)
             continue;
 
-
-        const uint32_t bucket = uint32_t(ep) / kBucketSec;
-        if (count > 0 && (uint32_t(out[count - 1].epoch) / kBucketSec) == bucket) {
-            if (ep >= out[count - 1].epoch)
-                out[count - 1] = {ep, int16_t(mgdl)};
-        } else if (count < capacity) {
-            out[count++] = {ep, int16_t(mgdl)};
-        } else {
-            memmove(out, out + 1, (capacity - 1) * sizeof(gluco::Point));
-            out[capacity - 1] = {ep, int16_t(mgdl)};
+        const int64_t bucket = int64_t(ep) / 300;
+        bool merged = false;
+        for (size_t i = 0; i < outCount; ++i) {
+            if (out[i].epoch / 300 == bucket) {
+                if (ep >= out[i].epoch)
+                    out[i] = {int64_t(ep), int16_t(g)};
+                merged = true;
+                break;
+            }
+        }
+        if (!merged && outCount < maxOut) {
+            out[outCount++] = {int64_t(ep), int16_t(g)};
         }
     }
 
-    Serial.printf("[DIABETES-M] Historial 24 h recuperado: %u muestras consolidadas\n", unsigned(count));
-    return count > 0;
+    Serial.printf("[DIABETES-M] Histórico 24h recuperado: %u bloques de 5 min\n", unsigned(outCount));
+    return outCount > 0;
 }
 
