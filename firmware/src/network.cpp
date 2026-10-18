@@ -418,6 +418,11 @@ void task(void *) {
                 "[RED] Cola iniciada: usuarios y glucosa LibreLinkUp separados en el tiempo");
         }
 
+        if (otaBusy()) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         const uint32_t tick = millis();
         const bool tlsGapReady = !lastTlsRequest || tick - lastTlsRequest >= kTlsGapMs;
         const bool libreGapReady = !lastLibreRequest || tick - lastLibreRequest >= kLibreGapMs;
@@ -443,8 +448,9 @@ void task(void *) {
                                   work->current, work->currentValid, work->dailySummary, time(nullptr));
             }
             publish();
+            otaService();
             const bool dmLinked = dmLinkHasAccount(config.patientId.c_str());
-            if (config.diabetesmEnabled && dmLinked) {
+            if (!otaBusy() && config.diabetesmEnabled && dmLinked) {
                 gluco::Point pointToUpload{};
                 if (config.diabetesmSyncFiltered) {
                     if (work->pointCount > 0)
@@ -458,11 +464,12 @@ void task(void *) {
                     String dmError;
                     diabetesm.uploadGlucose(pointToUpload, config, dmError);
                 }
+                otaService();
                 // Sincronizar historial de 24h desde Diabetes:M al inicio y cada 15 minutos (solo RAM, 0 escrituras en Flash)
                 const uint32_t nowMs = millis();
                 const int64_t nowEp = time(nullptr);
-                if (!dmHistoryDue || due(nowMs, dmHistoryDue) ||
-                    !historyStoreHasFullDay(config.patientId.c_str(), nowEp)) {
+                if (!otaBusy() && (!dmHistoryDue || due(nowMs, dmHistoryDue) ||
+                    !historyStoreHasFullDay(config.patientId.c_str(), nowEp))) {
                     auto *dmPoints = static_cast<gluco::Point *>(
                         heap_caps_malloc(300 * sizeof(gluco::Point), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
                     if (dmPoints) {
