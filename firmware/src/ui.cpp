@@ -1879,7 +1879,7 @@ void updateForecast() {
             label(statsCard, 14, 114, 214, minMax, &fonts::montserrat16);
 
             char countStr[48];
-            snprintf(countStr, sizeof(countStr), "Muestras 24h: %u", snapshot.dailySummary.totalReadings);
+            snprintf(countStr, sizeof(countStr), "Muestras 24h: %u", unsigned(snapshot.dailySummary.totalReadings));
             label(statsCard, 14, 148, 214, countStr, &fonts::montserrat14, theme::Muted);
             label(statsCard, 14, 178, 214, "Diabetes:M · RAM (sin desgaste)", &fonts::montserrat14, theme::Blue);
         } else {

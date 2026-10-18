@@ -13,13 +13,19 @@ QueueHandle_t patientQueue = nullptr;
 const char *weatherText(int) { return "Nubes y claros"; }
 Config configSnapshot() {
     Config c;
-    c.ssid = "Wi-Fi";
-    c.libreUser = "usuario";
+    c.ssid = "WIFI-RSC-CASA";
+    c.libreUser = "robsancar96@gmail.com";
     c.patientId = "demo";
-    c.patientName = "Usuario";
+    c.patientName = "Roberto";
     c.city = "Madrid";
     c.locationSet = true;
+    c.diabetesmEnabled = true;
+    c.diabetesmUser = "robsancar96@gmail.com";
     return c;
+}
+bool dmLinkHasAccount(const char *, char *out, size_t outSize) {
+    if (out && outSize) snprintf(out, outSize, "%s", "robsancar96@gmail.com");
+    return true;
 }
 const char *configStorageState() { return "ready"; }
 const char *appResetReason() { return "Encendido"; }
@@ -44,6 +50,8 @@ bool deviceQueueWifi(const String &, const String &, bool, String &) { return fa
 bool deviceQueueRemoveWifi(const String &, String &) { return false; }
 bool deviceQueueLocation(const LocationChoice &, String &) { return false; }
 bool deviceQueueLibreUser(const ConnectionChoice &, String &) { return false; }
+bool deviceQueueDiabetesM(const String &, const String &, bool, String &, const String &, bool) { return false; }
+bool deviceSaveDiabetesM(const String &, const String &, bool, String &, const String &, bool) { return false; }
 SetupJob deviceMutationResult(String &) { return SetupJob::Idle; }
 SetupJob deviceWifiResults(WifiScanEntry *, size_t, size_t &, String &) { return SetupJob::Idle; }
 SetupJob deviceGeocodeResults(LocationChoice *, size_t, size_t &, String &) {
@@ -69,12 +77,21 @@ int main(int argc, char **argv) {
     data.currentValid = true;
     data.current = {now, 126};
     data.glucoseFetched = now;
+    strlcpy(data.direction, "Flat", sizeof(data.direction));
     data.weatherValid = true;
     data.temperature = 22;
     data.high = 25;
     data.low = 17;
     data.weatherCode = 2;
     data.weatherIsDay = true;
+    data.dailySummary.valid = true;
+    data.dailySummary.tirPercent = 74.0f;
+    data.dailySummary.averageGlucose = 152;
+    data.dailySummary.minGlucose = 81;
+    data.dailySummary.maxGlucose = 289;
+    data.dailySummary.lowPercent = 0.0f;
+    data.dailySummary.highPercent = 26.0f;
+    data.dailySummary.totalReadings = 248;
     data.pointCount = 144;
     for (size_t i = 0; i < data.pointCount; ++i)
         data.points[i] = {now - 12 * 3600 + int64_t(i) * 300,
