@@ -15,6 +15,10 @@
 using net::Doc;
 
 namespace {
+constexpr const char *kGithubApiManifestUrl =
+    "https://api.github.com/repos/RSanchez996/gluco_waveshare/contents/bin/manifest.json?ref=main";
+constexpr const char *kGithubApiFirmwareUrl =
+    "https://api.github.com/repos/RSanchez996/gluco_waveshare/contents/bin/gluco_waveshare.bin?ref=main";
 constexpr const char *kGithubManifestUrl =
     "https://raw.githubusercontent.com/RSanchez996/gluco_waveshare/main/bin/manifest.json";
 constexpr const char *kGithubFirmwareUrl =
@@ -84,13 +88,16 @@ bool fetchRemoteHeaderDescriptor(String &outVersion, String &outElfSha256, Strin
     } guard;
 
     const String userAgent = String("GlucoWaveshare/") + APP_VERSION;
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        vTaskDelay(pdMS_TO_TICKS(attempt == 0 ? 750 : 1500));
-        const String url = String(kGithubFirmwareUrl) + "?t=" + String(static_cast<unsigned long>(time(nullptr)));
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        vTaskDelay(pdMS_TO_TICKS(attempt == 0 ? 500 : 1000));
+        const bool useApi = (attempt % 2 == 0);
+        const String url = useApi
+                               ? String(kGithubApiFirmwareUrl)
+                               : (String(kGithubFirmwareUrl) + "?t=" + String(static_cast<unsigned long>(time(nullptr))));
         esp_http_client_config_t cfg{};
         cfg.url = url.c_str();
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
-        cfg.timeout_ms = 20000;
+        cfg.timeout_ms = 12000;
         cfg.buffer_size = 4096;
         cfg.buffer_size_tx = 2048;
         cfg.addr_type = HTTP_ADDR_TYPE_INET;
@@ -112,6 +119,8 @@ bool fetchRemoteHeaderDescriptor(String &outVersion, String &outElfSha256, Strin
         } cleanup{client};
 
         esp_http_client_set_method(client, HTTP_METHOD_GET);
+        if (useApi)
+            esp_http_client_set_header(client, "Accept", "application/vnd.github.raw+json");
         esp_http_client_set_header(client, "Range", "bytes=0-287");
         esp_http_client_set_header(client, "Accept-Encoding", "identity");
         esp_http_client_set_header(client, "Cache-Control", "no-cache");
@@ -129,7 +138,7 @@ bool fetchRemoteHeaderDescriptor(String &outVersion, String &outElfSha256, Strin
         uint8_t header[288]{};
         size_t readTotal = 0;
         int zeroReads = 0;
-        const uint32_t deadline = millis() + 12000;
+        const uint32_t deadline = millis() + 10000;
         while (readTotal < sizeof(header) && !runtime::due(millis(), deadline)) {
             const int n = esp_http_client_read(client, reinterpret_cast<char *>(header + readTotal),
                                                sizeof(header) - readTotal);
@@ -172,9 +181,15 @@ bool fetchManifest(ManifestInfo &info, String &error) {
         error = "Conecta el Wi-Fi antes de buscar actualizaciones";
         return false;
     }
-    const String url = String(kGithubManifestUrl) + "?t=" + String(static_cast<unsigned long>(time(nullptr)));
     Doc d(12288);
-    net::Response r = net::request(url, d, "GET", "", {{"Cache-Control", "no-cache"}}, 24 * 1024);
+    net::Response r = net::request(String(kGithubApiManifestUrl), d, "GET", "",
+                                   {{"Accept", "application/vnd.github.raw+json"},
+                                    {"Cache-Control", "no-cache"}},
+                                   24 * 1024);
+    if (r.status != 200 || !d["images"].is<JsonArray>()) {
+        const String rawUrl = String(kGithubManifestUrl) + "?t=" + String(static_cast<unsigned long>(time(nullptr)));
+        r = net::request(rawUrl, d, "GET", "", {{"Cache-Control", "no-cache"}}, 24 * 1024);
+    }
     if (r.status != 200 || !d["images"].is<JsonArray>()) {
         error = r.error.isEmpty() ? ("No se pudo leer manifest.json (HTTP " + String(r.status) + ")")
                                   : r.error;
@@ -333,13 +348,16 @@ void performInstall() {
 
     const String userAgent = String("GlucoWaveshare/") + APP_VERSION;
     esp_http_client_handle_t client = nullptr;
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        vTaskDelay(pdMS_TO_TICKS(attempt == 0 ? 750 : 1500));
-        const String url = String(kGithubFirmwareUrl) + "?t=" + String(static_cast<unsigned long>(time(nullptr)));
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        vTaskDelay(pdMS_TO_TICKS(attempt == 0 ? 500 : 1000));
+        const bool useApi = (attempt % 2 == 0);
+        const String url = useApi
+                               ? String(kGithubApiFirmwareUrl)
+                               : (String(kGithubFirmwareUrl) + "?t=" + String(static_cast<unsigned long>(time(nullptr))));
         esp_http_client_config_t cfg{};
         cfg.url = url.c_str();
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
-        cfg.timeout_ms = 30000;
+        cfg.timeout_ms = 15000;
         cfg.buffer_size = 8192;
         cfg.buffer_size_tx = 4096;
         cfg.addr_type = HTTP_ADDR_TYPE_INET;
@@ -352,6 +370,8 @@ void performInstall() {
             continue;
 
         esp_http_client_set_method(client, HTTP_METHOD_GET);
+        if (useApi)
+            esp_http_client_set_header(client, "Accept", "application/vnd.github.raw+json");
         esp_http_client_set_header(client, "Accept-Encoding", "identity");
         esp_http_client_set_header(client, "Cache-Control", "no-cache");
         esp_http_client_set_header(client, "Connection", "close");
@@ -368,6 +388,7 @@ void performInstall() {
             client = nullptr;
             continue;
         }
+        esp_http_client_set_timeout_ms(client, 20000);
 
         const int64_t contentLength = esp_http_client_fetch_headers(client);
         const int httpStatus = esp_http_client_get_status_code(client);
@@ -391,7 +412,7 @@ void performInstall() {
     }
 
     if (!client) {
-        setStatus(OtaState::Failed, "No se pudo conectar por HTTPS con GitHub tras 3 intentos");
+        setStatus(OtaState::Failed, "No se pudo conectar por HTTPS con GitHub tras 4 intentos");
         return;
     }
     struct ClientCleanup {
