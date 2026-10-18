@@ -1,8 +1,10 @@
 #include "app.hpp"
 #include "diabetesm_links.hpp"
 #include "net.hpp"
+#include "ota.hpp"
 #include "runtime.hpp"
 #include "web_assets.hpp"
+
 #include <DNSServer.h>
 #include <WiFi.h>
 #include <algorithm>
@@ -226,7 +228,31 @@ esp_err_t get(httpd_req_t *req) {
             }
         } else if (path == "/api/mutation/status")
             state = deviceMutationResult(message);
-        else {
+        else if (path == "/api/ota/status") {
+            const OtaStatus st = otaGetStatus();
+            const char *stName = st.state == OtaState::Idle              ? "idle"
+                                 : st.state == OtaState::Checking        ? "checking"
+                                 : st.state == OtaState::UpToDate        ? "up_to_date"
+                                 : st.state == OtaState::UpdateAvailable ? "update_available"
+                                 : st.state == OtaState::Downloading     ? "downloading"
+                                 : st.state == OtaState::Installing      ? "installing"
+                                 : st.state == OtaState::Rebooting       ? "rebooting"
+                                                                         : "failed";
+            d["state"] = stName;
+            d["busy"] = otaBusy();
+            d["progress"] = st.progressPercent;
+            d["downloaded_bytes"] = st.downloadedBytes;
+            d["total_bytes"] = st.totalBytes;
+            d["current_version"] = st.currentVersion;
+            d["current_build"] = st.currentBuild;
+            d["active_partition"] = st.activePartition;
+            d["remote_version"] = st.remoteVersion;
+            d["remote_build"] = st.remoteBuild;
+            d["message"] = st.message;
+            d["changes"] = st.changes;
+            json(req, d);
+            return ESP_OK;
+        } else {
             error(req, 400, "Ruta no válida");
             return ESP_OK;
         }
@@ -263,6 +289,10 @@ esp_err_t post(httpd_req_t *req) {
     bool ok = false;
     if (path == "/api/wifi/scan")
         ok = deviceWifiScan(message);
+    else if (path == "/api/ota/check")
+        ok = otaRequestCheck(message);
+    else if (path == "/api/ota/install")
+        ok = otaRequestInstall(message);
     else if (path == "/api/libre/login")
         ok = deviceLibreLogin(d["user"] | "", d["password"] | "", d["region"] | "eu", message);
     else if (path == "/api/geocode")
@@ -410,7 +440,8 @@ void startServer() {
     favRoute.handler = favicon;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &favRoute));
     for (const char *url : {"/api/config", "/api/diagnostics", "/api/wifi/scan/status",
-                            "/api/libre/status", "/api/geocode/status", "/api/mutation/status"}) {
+                            "/api/libre/status", "/api/geocode/status", "/api/mutation/status",
+                            "/api/ota/status"}) {
         httpd_uri_t route{};
         route.uri = url;
         route.method = HTTP_GET;
@@ -418,7 +449,9 @@ void startServer() {
         ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     }
     for (const char *url : {"/api/wifi", "/api/wifi/networks", "/api/wifi/scan", "/api/libre/login",
-                            "/api/geocode", "/api/save", "/api/reset"}) {
+                            "/api/geocode", "/api/save", "/api/reset", "/api/ota/check",
+                            "/api/ota/install"}) {
+
         httpd_uri_t route{};
         route.uri = url;
         route.method = HTTP_POST;

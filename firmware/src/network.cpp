@@ -2,6 +2,7 @@
 #include "diabetesm_links.hpp"
 #include "history_store.hpp"
 #include "net.hpp"
+#include "ota.hpp"
 #include "providers.hpp"
 #include "runtime.hpp"
 #include <WiFi.h>
@@ -20,7 +21,9 @@ constexpr uint32_t kTlsGapMs = 3000;
 constexpr uint32_t kWifiStableMs = 8000;
 constexpr uint32_t kReconnectFallbackMs = 60000;
 constexpr uint32_t kExtraWifiFallbackMs = 30000;
+constexpr uint32_t kDiabetesMHistoryIntervalMs = 15 * 60 * 1000UL;
 AppState *work = nullptr;
+
 
 struct GlucoseSmoother {
     float lastSmoothed = 0.0f;
@@ -153,12 +156,13 @@ void task(void *) {
         abort();
     strlcpy(work->activePatientId, config.patientId.c_str(), sizeof(work->activePatientId));
     connectionCacheLoad(*work);
+    otaInit();
     publish();
 
     LibreClient libre;
     DiabetesMClient diabetesm;
     GlucoseSmoother smoother;
-    uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0;
+    uint32_t glucoseDue = 0, weatherDue = 0, connectionsDue = 0, dmHistoryDue = 0;
     uint32_t connectedAt = 0, disconnectedAt = 0, lastTlsRequest = 0, lastLibreRequest = 0,
              reconnectAt = 0, libreBlockedUntil = 0;
     bool scheduleReady = false, portalWasActive = false;
@@ -175,6 +179,7 @@ void task(void *) {
 
     while (true) {
         configService();
+        otaService();
         // Radio changes and TLS share this owner: no cross-task Wi-Fi race.
         portalLoop();
         config = configSnapshot();
@@ -194,6 +199,7 @@ void task(void *) {
             smoother.reset();
             text(work->glucoseError, "Usuario cambiado; esperando una lectura nueva...");
             glucoseDue = millis() + 1000;
+            dmHistoryDue = 0;
             libreBlockedUntil = 0;
             glucoseShortRetries = 0;
             publish();
@@ -217,6 +223,7 @@ void task(void *) {
                     diabetesm.resetSession();
                     smoother.reset();
                     historyStoreLoad(selection.id, work->dailySummary, time(nullptr));
+                    dmHistoryDue = 0;
                 }
                 String msg = "Usuario: " + String(selection.name) +
                              (work->activePatientDmLinked ? " (DM vinculado)" : " (Sin DM)");
@@ -290,6 +297,7 @@ void task(void *) {
                 diabetesmKey = currentDiabetesMKey;
                 diabetesm.resetSession();
                 smoother.reset();
+                dmHistoryDue = 0;
                 if (work->currentValid && config.diabetesmEnabled) {
                     glucoseDue = millis();
                 }
@@ -421,10 +429,18 @@ void task(void *) {
             publish();
             const uint32_t wait = libre.read(*work);
             work->glucoseRequestStartedMs = 0;
+            const bool transient = work->glucoseError[0] && wait <= 120;
+            if (transient && glucoseShortRetries == 0 && work->currentValid &&
+                work->glucoseFetched > 0 && (time(nullptr) - work->glucoseFetched) < 10 * 60) {
+                Serial.printf("[LIBRE] Fallo puntual con lectura reciente válida; reintento silencioso en 45s (%s)\n",
+                              work->glucoseError);
+                work->glucoseError[0] = 0;
+            }
             if (work->currentValid || work->pointCount > 0) {
                 historyStoreMerge(config.patientId.c_str(), work->points, work->pointCount,
                                   work->current, work->currentValid, work->dailySummary, time(nullptr));
             }
+            publish();
             const bool dmLinked = dmLinkHasAccount(config.patientId.c_str());
             if (config.diabetesmEnabled && dmLinked) {
                 gluco::Point pointToUpload{};
@@ -440,12 +456,41 @@ void task(void *) {
                     String dmError;
                     diabetesm.uploadGlucose(pointToUpload, config, dmError);
                 }
+                // Sincronizar historial de 24h desde Diabetes:M al inicio y cada 15 minutos (solo RAM, 0 escrituras en Flash)
+                const uint32_t nowMs = millis();
+                const int64_t nowEp = time(nullptr);
+                if (!dmHistoryDue || due(nowMs, dmHistoryDue) ||
+                    !historyStoreHasFullDay(config.patientId.c_str(), nowEp)) {
+                    auto *dmPoints = static_cast<gluco::Point *>(
+                        heap_caps_malloc(300 * sizeof(gluco::Point), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                    if (dmPoints) {
+                        size_t dmCount = 0;
+                        String dmHistErr;
+                        if (diabetesm.fetchHistory24h(config, dmPoints, 300, dmCount, nowEp, dmHistErr) &&
+                            dmCount > 0) {
+                            historyStoreImport(config.patientId.c_str(), dmPoints, dmCount,
+                                               work->dailySummary, nowEp);
+                            if (work->currentValid || work->pointCount > 0) {
+                                historyStoreMerge(config.patientId.c_str(), work->points, work->pointCount,
+                                                  work->current, work->currentValid, work->dailySummary, nowEp);
+                            }
+                            Serial.printf("[TIR] Resumen 24h sincronizado desde Diabetes:M (RAM): TIR=%.1f%% "
+                                          "Bajo=%.1f%% Alto=%.1f%% Media=%d mg/dL (%u muestras)\n",
+                                          work->dailySummary.tirPercent, work->dailySummary.lowPercent,
+                                          work->dailySummary.highPercent, work->dailySummary.averageGlucose,
+                                          unsigned(work->dailySummary.totalReadings));
+                            dmHistoryDue = millis() + kDiabetesMHistoryIntervalMs;
+                        } else {
+                            dmHistoryDue = millis() + 3 * 60 * 1000UL;
+                        }
+                        heap_caps_free(dmPoints);
+                    }
+                }
             }
             publish();
             appDiagnosticStage("Esperando siguiente consulta");
             lastTlsRequest = millis();
             lastLibreRequest = lastTlsRequest;
-            const bool transient = work->glucoseError[0] && wait <= 120;
             const uint32_t seconds = transient && glucoseShortRetries == 0
                                          ? std::max<uint32_t>(45, wait)
                                          : std::max<uint32_t>(120, wait);
@@ -456,6 +501,7 @@ void task(void *) {
             else if (!work->glucoseError[0])
                 libreBlockedUntil = 0;
         } else if (tlsGapReady && libreGapReady && libreReady && due(tick, connectionsDue)) {
+
             appDiagnosticStage("Preparando usuarios Libre");
             Serial.println("[RED 1/1] Actualizando la lista de usuarios LibreLinkUp");
             const uint32_t wait = libre.listConnections(*work);

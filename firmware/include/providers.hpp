@@ -23,6 +23,8 @@ void connectionCacheSave(const AppState &state);
 class DiabetesMClient {
   public:
     bool uploadGlucose(const gluco::Point &point, const Config &config, String &error);
+    bool fetchHistory24h(const Config &config, gluco::Point *out, size_t capacity, size_t &count,
+                         int64_t nowEpoch, String &error);
     void resetSession();
 
   private:
@@ -31,3 +33,4 @@ class DiabetesMClient {
     int64_t lastUploadedEpoch = 0;
     bool login(const Config &config, String &error);
 };
+

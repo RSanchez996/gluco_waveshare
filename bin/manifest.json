@@ -1,13 +1,20 @@
 {
   "version": "2.0.0",
+  "elf_sha256": "fc5083bab1d4a5e67017697a54898b065aeb12da80c44bccbc254400239e1b96",
+  "build_date": "Oct 18 2026 11:06:32",
   "target": "ESP32-S3-Touch-LCD-4.3B/BOX",
   "idf": "5.5.5",
+  "changes": [
+    "Cálculo de TIR 24 h desde Diabetes:M en RAM cada 15 min (sin desgaste de Flash)",
+    "Actualización OTA desde Ajustes con confirmación previa y resumen de cambios",
+    "Conexiones HTTPS reforzadas con reintentos automáticos y control de tiempos TLS"
+  ],
   "images": [
     {
       "file": "bootloader.bin",
       "offset": 0,
       "size": 22272,
-      "sha256": "6941e7bd8298eba84d9268d30f41c8712ab6985a7d93280cc031d732bec15196"
+      "sha256": "def5224fbbf338761b38d4373e4e8eec8b3f8669e7dfc291a6db836acea74d0a"
     },
     {
       "file": "partition-table.bin",
@@ -24,8 +31,8 @@
     {
       "file": "gluco_waveshare.bin",
       "offset": 458752,
-      "size": 1639088,
-      "sha256": "8d370a1eaa934abc306fc24703e45af667d54c4aa8215d275daa1bb02440d764"
+      "size": 1667568,
+      "sha256": "520f1bddb7e833285d6a664354ae1d36a09a8d3ca6d181599cfe23e39fc980ea"
     }
   ]
 }
