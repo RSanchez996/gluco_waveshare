@@ -1,7 +1,7 @@
 {
   "version": "2.0.1",
-  "elf_sha256": "72f9c1568c33127e613f584c0a5ed1e69c668f06158ef6cc4392bfad42e49f91",
-  "build_date": "Oct 18 2026 12:37:48",
+  "elf_sha256": "7bbc23dbf01444f8ed0331ac09c479bfe9e9857a28f3a7e4186956c75f5ba56a",
+  "build_date": "Oct 18 2026 13:09:01",
   "target": "ESP32-S3-Touch-LCD-4.3B/BOX",
   "idf": "5.5.5",
   "changes": [
@@ -32,8 +32,8 @@
     {
       "file": "gluco_waveshare.bin",
       "offset": 458752,
-      "size": 1668576,
-      "sha256": "c1439b92f5ac3861d9942db49e8be5f280e34b882a6f086fd9280bbb67c5889a"
+      "size": 1668976,
+      "sha256": "7acf25d42c24e6963effc31f29bf7dc915efccae7ca11f20ca81c4549937abc9"
     }
   ]
 }

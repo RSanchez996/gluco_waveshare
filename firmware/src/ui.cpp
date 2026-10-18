@@ -818,7 +818,9 @@ void gotoLibre(lv_event_t *) { pendingPage = PendingPage::Libre; }
 void gotoDiabetesM(lv_event_t *) { pendingPage = PendingPage::DiabetesM; }
 void gotoQr(lv_event_t *) { pendingPage = PendingPage::Setup; }
 void gotoOta(lv_event_t *) {
-    if (WiFi.status() == WL_CONNECTED && !otaBusy()) {
+    const OtaState st = otaGetStatus().state;
+    if (WiFi.status() == WL_CONNECTED && !otaBusy() &&
+        (st == OtaState::Idle || st == OtaState::Failed)) {
         String err;
         otaRequestCheck(err);
     }

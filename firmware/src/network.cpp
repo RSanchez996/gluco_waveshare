@@ -448,6 +448,21 @@ void task(void *) {
                                   work->current, work->currentValid, work->dailySummary, time(nullptr));
             }
             publish();
+            static bool initialOtaChecked = false;
+            if (!initialOtaChecked && work->currentValid) {
+                const OtaState st = otaGetStatus().state;
+                if (st == OtaState::UpdateAvailable || st == OtaState::UpToDate) {
+                    initialOtaChecked = true;
+                } else if (st == OtaState::Idle || st == OtaState::Failed) {
+                    String otaErr;
+                    otaRequestCheck(otaErr);
+                    otaService();
+                    const OtaState after = otaGetStatus().state;
+                    if (after == OtaState::UpdateAvailable || after == OtaState::UpToDate) {
+                        initialOtaChecked = true;
+                    }
+                }
+            }
             otaService();
             const bool dmLinked = dmLinkHasAccount(config.patientId.c_str());
             if (!otaBusy() && config.diabetesmEnabled && dmLinked) {

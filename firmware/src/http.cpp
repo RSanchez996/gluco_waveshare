@@ -170,11 +170,11 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         if (attempt > 0) {
             Serial.printf("[HTTP] Reintento %d/2 para %s tras fallo previo (%s)\n", attempt,
                           url.c_str(), r.error.c_str());
-            vTaskDelay(pdMS_TO_TICKS(800));
+            vTaskDelay(pdMS_TO_TICKS(1500));
         }
 
         t.used = 0;
-        t.deadline = millis() + 30000;
+        t.deadline = millis() + 45000;
         t.failed = false;
         t.cookie = "";
         r.status = 0;
@@ -188,7 +188,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         }
         options.event_handler = event;
         options.user_data = &t;
-        options.timeout_ms = 10000;
+        options.timeout_ms = 25000;
         options.buffer_size = 8192;
         options.buffer_size_tx = 4096;
         options.addr_type = HTTP_ADDR_TYPE_INET;
@@ -255,7 +255,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
             continue;
         }
 
-        esp_http_client_set_timeout_ms(client, 8000);
+        esp_http_client_set_timeout_ms(client, 25000);
         declared = esp_http_client_fetch_headers(client);
         if (declared == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
             const uint32_t fetchDeadline = millis() + 5000;
@@ -281,7 +281,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         t.used = 0;
         bool readError = false;
         int zeroReads = 0;
-        int eagainReads = 0;
+        size_t chunksRead = 0;
         while (t.used < t.limit) {
             if (declared > 0 && int64_t(t.used) >= declared)
                 break;
@@ -299,10 +299,8 @@ Response request(const String &url, Doc &doc, const char *method, const String &
                     n == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
                     if (t.used > 2 && (bodyBuffer[t.used - 1] == '}' || bodyBuffer[t.used - 1] == '\n'))
                         break;
-                    if (++eagainReads <= 1) {
-                        vTaskDelay(pdMS_TO_TICKS(50));
-                        continue;
-                    }
+                    vTaskDelay(pdMS_TO_TICKS(40));
+                    continue;
                 }
                 Serial.printf("[HTTP] Error leyendo body de %s: n=%d, errno=%d\n", url.c_str(), n, err);
                 readError = true;
@@ -314,7 +312,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
                         break;
                     if (t.used > 2 && (bodyBuffer[t.used - 1] == '}' || bodyBuffer[t.used - 1] == '\n'))
                         break;
-                    if (++zeroReads <= 20) {
+                    if (++zeroReads <= 25) {
                         vTaskDelay(pdMS_TO_TICKS(30));
                         continue;
                     }
@@ -323,7 +321,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
                     readError = true;
                     break;
                 } else if (declared > 0 && int64_t(t.used) < declared) {
-                    if (++zeroReads <= 20) {
+                    if (++zeroReads <= 25) {
                         vTaskDelay(pdMS_TO_TICKS(30));
                         continue;
                     }
@@ -336,9 +334,9 @@ Response request(const String &url, Doc &doc, const char *method, const String &
                 }
             }
             zeroReads = 0;
-            eagainReads = 0;
             t.used += n;
-            vTaskDelay(pdMS_TO_TICKS(2));
+            if (++chunksRead % 4 == 0)
+                vTaskDelay(1);
             if (esp_http_client_is_chunked_response(client) &&
                 esp_http_client_is_complete_data_received(client))
                 break;
