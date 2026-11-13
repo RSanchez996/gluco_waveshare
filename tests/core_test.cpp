@@ -38,4 +38,33 @@ int main() {
                 assert(data[i].epoch > data[i - 1].epoch);
         }
     }
+    // Test updateRecentPoints
+    Point recent[kMaxRecentPoints]{};
+    size_t recentCount = 0;
+    int64_t settledEpoch = now - 900; // 15 min ago
+
+    // Add intermediate points at +2 min, +4 min, +6 min
+    updateRecentPoints(recent, recentCount, kMaxRecentPoints, settledEpoch, {now - 780, 105}, true, now);
+    assert(recentCount == 1 && recent[0].epoch == now - 780 && recent[0].glucose == 105);
+
+    updateRecentPoints(recent, recentCount, kMaxRecentPoints, settledEpoch, {now - 660, 110}, true, now);
+    assert(recentCount == 2 && recent[1].epoch == now - 660 && recent[1].glucose == 110);
+
+    // Duplicate epoch updates value without creating a duplicate
+    updateRecentPoints(recent, recentCount, kMaxRecentPoints, settledEpoch, {now - 660, 115}, true, now);
+    assert(recentCount == 2 && recent[1].glucose == 115);
+
+    // Point older than or equal to settledEpoch is not added
+    updateRecentPoints(recent, recentCount, kMaxRecentPoints, settledEpoch, {now - 1000, 95}, true, now);
+    assert(recentCount == 2);
+
+    // Advance settledEpoch to now - 700: points <= now - 700 are pruned
+    settledEpoch = now - 700;
+    updateRecentPoints(recent, recentCount, kMaxRecentPoints, settledEpoch, {now - 500, 120}, true, now);
+    assert(recentCount == 2 && recent[0].epoch == now - 660 && recent[1].epoch == now - 500);
+
+    // Advance settledEpoch to now: all older points pruned
+    settledEpoch = now;
+    updateRecentPoints(recent, recentCount, kMaxRecentPoints, settledEpoch, {now, 125}, true, now);
+    assert(recentCount == 0);
 }

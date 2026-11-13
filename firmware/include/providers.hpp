@@ -25,6 +25,8 @@ class DiabetesMClient {
     bool uploadGlucose(const gluco::Point &point, const Config &config, String &error);
     bool fetchHistory24h(const Config &config, gluco::Point *out, size_t maxOut, size_t &outCount,
                          int64_t now, String &error);
+    bool fetchInsulinEntries(const Config &config, InsulinEntry *out, size_t maxOut, size_t &outCount,
+                             int64_t now, String &error);
     void resetSession();
 
   private:

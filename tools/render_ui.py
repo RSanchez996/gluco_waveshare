@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory() as tmp:
   sys.exit(1)
  (ROOT/'docs').mkdir(exist_ok=True)
  from PIL import Image
- for name,args in [('pantalla',[]),('ajustes',['setup'])]:
+ for name,args in [('pantalla',[]),('ajustes',['setup']),('insulina',['insulin']),('insulina_semana',['insulin_weekly'])]:
   ppm=d/(name+'.ppm');subprocess.run([str(target),str(ppm),*args],check=True)
   Image.open(ppm).save(ROOT/'docs'/(name+'.png'))
  print('OK: production UI rendered at 800x480')

@@ -10,6 +10,7 @@ constexpr int64_t kStaleSeconds = 5 * 60;
 constexpr int64_t kMaxGapSeconds = 12 * 60;
 constexpr int64_t kGraphGapSeconds = 30 * 60;
 constexpr size_t kMaxPoints = 160;
+constexpr size_t kMaxRecentPoints = 32;
 enum class Range : uint8_t { Invalid, LowRed, Green, HighYellow, VeryHighOrange };
 inline Range range(double value) {
     if (!std::isfinite(value) || value < 20 || value > 1000)
@@ -72,5 +73,47 @@ inline bool delta(const Point *p, size_t n, int &difference, int &minutes) {
     difference = p[n - 1].glucose - p[n - 2].glucose;
     minutes = int((p[n - 1].epoch - p[n - 2].epoch + 30) / 60);
     return minutes > 0;
+}
+inline void updateRecentPoints(Point *recent, size_t &recentCount, size_t maxRecent,
+                               int64_t lastSettledEpoch, const Point &current, bool currentValid,
+                               int64_t now) {
+    size_t out = 0;
+    for (size_t i = 0; i < recentCount; ++i) {
+        if (recent[i].epoch > lastSettledEpoch && validEpoch(recent[i].epoch, now) &&
+            range(recent[i].glucose) != Range::Invalid) {
+            recent[out++] = recent[i];
+        }
+    }
+    recentCount = out;
+
+    if (currentValid && current.epoch > lastSettledEpoch && validEpoch(current.epoch, now) &&
+        range(current.glucose) != Range::Invalid) {
+        bool found = false;
+        for (size_t i = 0; i < recentCount; ++i) {
+            if (recent[i].epoch == current.epoch) {
+                recent[i].glucose = current.glucose;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (recentCount < maxRecent) {
+                recent[recentCount++] = current;
+            } else {
+                for (size_t i = 1; i < recentCount; ++i)
+                    recent[i - 1] = recent[i];
+                recent[recentCount - 1] = current;
+            }
+            for (size_t i = 1; i < recentCount; ++i) {
+                const Point item = recent[i];
+                size_t j = i;
+                while (j && recent[j - 1].epoch > item.epoch) {
+                    recent[j] = recent[j - 1];
+                    --j;
+                }
+                recent[j] = item;
+            }
+        }
+    }
 }
 } // namespace gluco

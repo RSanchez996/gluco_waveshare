@@ -350,9 +350,6 @@ void historyStoreMerge(const char *patientId, const gluco::Point *points, size_t
     }
 
     computeSummary(ramPoints, ramCount, summary);
-    Serial.printf("[HIST] TIR=%.1f%% (rango=%.0f%% bajo=%.0f%% alto=%.0f%%) media=%d min=%d max=%d muestras=%u\n",
-                  summary.tirPercent, summary.tirPercent, summary.lowPercent, summary.highPercent,
-                  summary.averageGlucose, summary.minGlucose, summary.maxGlucose, unsigned(summary.totalReadings));
     if (storageMutex)
         xSemaphoreGive(storageMutex);
 }

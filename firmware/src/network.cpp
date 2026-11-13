@@ -162,6 +162,7 @@ void task(void *) {
     uint32_t connectedAt = 0, disconnectedAt = 0, lastTlsRequest = 0, lastLibreRequest = 0,
              reconnectAt = 0, libreBlockedUntil = 0;
     bool scheduleReady = false, portalWasActive = false, dmHistorySynced = false;
+    uint32_t dmInsulinDue = 0;
     uint8_t glucoseShortRetries = 0;
     String accountKey = net::sha256(config.libreUser + "\n" + config.librePass + "\n" +
                                     config.libreRegion + "\n" + config.libreVersion);
@@ -185,6 +186,7 @@ void task(void *) {
             strlcpy(work->activePatientDmUser, dmUser, sizeof(work->activePatientDmUser));
             historyStoreLoad(config.patientId.c_str(), work->dailySummary, time(nullptr));
             work->pointCount = 0;
+            work->recentPointCount = 0;
             work->currentValid = false;
             work->current = {};
             work->direction[0] = 0;
@@ -192,6 +194,7 @@ void task(void *) {
             work->glucoseRequestStartedMs = 0;
             diabetesm.resetSession();
             dmHistorySynced = false;
+            dmInsulinDue = 0;
             smoother.reset();
             text(work->glucoseError, "Usuario cambiado; esperando una lectura nueva...");
             glucoseDue = millis() + 1000;
@@ -211,12 +214,14 @@ void task(void *) {
                 if (changedPatient) {
                     glucoseShortRetries = 0;
                     work->pointCount = 0;
+                    work->recentPointCount = 0;
                     work->currentValid = false;
                     work->current = {};
                     work->direction[0] = 0;
                     work->glucoseFetched = 0;
                     diabetesm.resetSession();
                     dmHistorySynced = false;
+                    dmInsulinDue = 0;
                     smoother.reset();
                     historyStoreLoad(selection.id, work->dailySummary, time(nullptr));
                 }
@@ -258,6 +263,7 @@ void task(void *) {
                 strlcpy(work->activePatientId, config.patientId.c_str(),
                         sizeof(work->activePatientId));
                 work->pointCount = 0;
+                work->recentPointCount = 0;
                 work->currentValid = false;
                 work->current = {};
                 work->glucoseFetched = 0;
@@ -292,6 +298,7 @@ void task(void *) {
                 diabetesmKey = currentDiabetesMKey;
                 diabetesm.resetSession();
                 dmHistorySynced = false;
+                dmInsulinDue = 0;
                 smoother.reset();
                 if (work->currentValid && config.diabetesmEnabled) {
                     glucoseDue = millis();
@@ -429,19 +436,22 @@ void task(void *) {
                                   work->current, work->currentValid, work->dailySummary, time(nullptr));
             }
             const bool dmLinked = dmLinkHasAccount(config.patientId.c_str());
-            if (config.diabetesmEnabled && dmLinked) {
-                gluco::Point pointToUpload{};
-                if (config.diabetesmSyncFiltered) {
-                    if (work->pointCount > 0)
-                        pointToUpload = work->points[work->pointCount - 1];
-                } else {
-                    if (work->currentValid && work->current.epoch > 0 && work->current.glucose > 0) {
-                        pointToUpload = smoother.smooth(work->current, work->direction);
+            const bool hasDmAuth = !config.diabetesmUser.isEmpty() && !config.diabetesmPass.isEmpty();
+            if (dmLinked || hasDmAuth) {
+                if (config.diabetesmEnabled) {
+                    gluco::Point pointToUpload{};
+                    if (config.diabetesmSyncFiltered) {
+                        if (work->pointCount > 0)
+                            pointToUpload = work->points[work->pointCount - 1];
+                    } else {
+                        if (work->currentValid && work->current.epoch > 0 && work->current.glucose > 0) {
+                            pointToUpload = smoother.smooth(work->current, work->direction);
+                        }
                     }
-                }
-                if (pointToUpload.epoch > 0 && pointToUpload.glucose > 0) {
-                    String dmError;
-                    diabetesm.uploadGlucose(pointToUpload, config, dmError);
+                    if (pointToUpload.epoch > 0 && pointToUpload.glucose > 0) {
+                        String dmError;
+                        diabetesm.uploadGlucose(pointToUpload, config, dmError);
+                    }
                 }
                 if (!dmHistorySynced) {
                     dmHistorySynced = true;
@@ -462,6 +472,24 @@ void task(void *) {
                         }
                     }
                 }
+                if (!dmInsulinDue || due(tick, dmInsulinDue)) {
+                    const int64_t nowEpoch = time(nullptr);
+                    if (nowEpoch >= 1700000000) {
+                        vTaskDelay(pdMS_TO_TICKS(300));
+                        InsulinEntry insEntries[kMaxInsulinEntries];
+                        size_t insCount = 0;
+                        String insErr;
+                        if (diabetesm.fetchInsulinEntries(config, insEntries, kMaxInsulinEntries,
+                                                         insCount, nowEpoch, insErr)) {
+                            memcpy(work->insulinEntries, insEntries, insCount * sizeof(InsulinEntry));
+                            work->insulinCount = insCount;
+                            work->insulinFetched = nowEpoch;
+                            dmInsulinDue = tick + 2 * 60 * 1000;
+                        } else {
+                            dmInsulinDue = tick + 30 * 1000;
+                        }
+                    }
+                }
             }
             publish();
             appDiagnosticStage("Esperando siguiente consulta");
@@ -473,12 +501,6 @@ void task(void *) {
                                          : std::max<uint32_t>(120, wait);
             glucoseShortRetries = transient ? std::min<uint8_t>(3, glucoseShortRetries + 1) : 0;
             glucoseDue = lastTlsRequest + seconds * 1000;
-            if (glucoseShortRetries >= 2) {
-                Serial.println("[WIFI] Reintentos fallidos; reconectando enlace Wi-Fi para restablecer sockets...");
-                WiFi.disconnect();
-                connectedAt = 0;
-                scheduleReady = false;
-            }
             if (work->glucoseError[0] && wait > 120)
                 libreBlockedUntil = lastTlsRequest + wait * 1000;
             else if (!work->glucoseError[0])

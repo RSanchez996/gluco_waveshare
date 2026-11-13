@@ -76,9 +76,18 @@ struct WeatherDay {
     int rain = 0;
     int code = 0;
 };
+struct InsulinEntry {
+    int64_t epoch = 0;
+    float bolus = 0.0f;
+    float basal = 0.0f;
+    float carbs = 0.0f;
+};
+constexpr size_t kMaxInsulinEntries = 64;
 struct AppState {
     gluco::Point points[gluco::kMaxPoints]{};
     size_t pointCount = 0;
+    gluco::Point recentPoints[gluco::kMaxRecentPoints]{};
+    size_t recentPointCount = 0;
     gluco::Point current{};
     bool currentValid = false;
     char direction[24]{};
@@ -103,6 +112,9 @@ struct AppState {
     DailySummary dailySummary{};
     bool activePatientDmLinked = false;
     char activePatientDmUser[160]{};
+    InsulinEntry insulinEntries[kMaxInsulinEntries]{};
+    size_t insulinCount = 0;
+    int64_t insulinFetched = 0;
 };
 // No shared mutable Strings: readers own a copy, the data worker owns writes.
 Config configSnapshot();
@@ -169,6 +181,9 @@ void uiInit();
 void uiTick();
 void uiShowSetup();
 void uiShowHome();
+void uiShowClock();
+void uiShowInsulin();
+void uiSetInsulinWeekly(bool weekly);
 void uiClearGraphSelection();
 void networkStart();
 const char *weatherText(int code);

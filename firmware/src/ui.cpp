@@ -35,7 +35,8 @@ lv_obj_t *timeLabel = nullptr, *dateLabel = nullptr, *weatherLabel = nullptr,
 lv_obj_t *glucosePanel = nullptr, *glucoseAccent = nullptr;
 lv_obj_t *clockBig = nullptr, *clockDate = nullptr, *clockWeather = nullptr,
          *clockSummary = nullptr, *clockIcon = nullptr, *hoursBox = nullptr, *hoursTab = nullptr,
-         *daysTab = nullptr, *summaryTab = nullptr, *setupInfo = nullptr, *setupQr = nullptr;
+         *daysTab = nullptr, *summaryTab = nullptr, *insulinTab = nullptr, *setupInfo = nullptr, *setupQr = nullptr,
+         *clockCardWidget = nullptr, *weatherCardWidget = nullptr, *forecastTitleWidget = nullptr;
 lv_obj_t *keyboard = nullptr, *keyboardToggle = nullptr, *keyboardLastInput = nullptr,
          *wifiList = nullptr, *wifiSaved = nullptr, *wifiSsid = nullptr, *wifiPass = nullptr,
          *cityInput = nullptr, *locationList = nullptr, *loginUser = nullptr, *loginPass = nullptr,
@@ -70,10 +71,11 @@ bool actionConnect = false, actionSyncFiltered = false;
 size_t actionIndex = 0;
 int64_t selectedGraphEpoch = 0;
 weathericons::Icon homeGlyph{}, clockGlyph{}, hourGlyphs[6]{}, dayGlyphs[4]{};
-enum class ForecastView { Hours, Days, Summary };
+enum class ForecastView { Hours, Days, Summary, Insulin };
 ForecastView forecastView = ForecastView::Hours;
+bool insulinViewWeekly = false;
 int64_t renderedWeather = -1, renderedGlucose = -1, renderedMinute = -1, renderedGraphBucket = -1,
-        renderedLatestEpoch = -1;
+        renderedLatestEpoch = -1, renderedInsulin = -1;
 int64_t renderedRequestStep = -1;
 int renderedLatestValue = -1;
 size_t renderedPoints = size_t(-1);
@@ -83,6 +85,7 @@ char pendingPatientId[100]{};
 int64_t renderedConnections = -1;
 size_t renderedConnectionCount = size_t(-1);
 char renderedConnectionsError[160]{};
+size_t renderedRecentPoints = size_t(-1);
 lv_color_t c(uint32_t value) { return lv_color_hex(value); }
 uint32_t rangeColor(double value) {
     switch (gluco::range(value)) {
@@ -98,16 +101,45 @@ uint32_t rangeColor(double value) {
         return theme::Muted;
     }
 }
+uint32_t blendRgb(uint32_t c1, uint32_t c2, float t) {
+    if (t <= 0.0f) return c1;
+    if (t >= 1.0f) return c2;
+    const uint32_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+    const uint32_t r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
+    const uint32_t r = uint32_t(r1 + t * (int(r2) - int(r1)));
+    const uint32_t g = uint32_t(g1 + t * (int(g2) - int(g1)));
+    const uint32_t b = uint32_t(b1 + t * (int(b2) - int(b1)));
+    return (r << 16) | (g << 8) | b;
+}
+uint32_t curveColor(double value) {
+    if (!std::isfinite(value) || value < 20)
+        return theme::Red;
+    if (value < 66.0)
+        return theme::Red;
+    if (value <= 74.0)
+        return blendRgb(theme::Red, theme::Green, float((value - 66.0) / 8.0));
+    if (value < 174.0)
+        return theme::Green;
+    if (value <= 186.0)
+        return blendRgb(theme::Green, theme::Yellow, float((value - 174.0) / 12.0));
+    if (value < 234.0)
+        return theme::Yellow;
+    if (value <= 246.0)
+        return blendRgb(theme::Yellow, theme::Orange, float((value - 234.0) / 12.0));
+    return theme::Orange;
+}
 const gluco::Point *latestReading() {
     if (snapshot.currentValid)
         return &snapshot.current;
+    if (snapshot.recentPointCount)
+        return &snapshot.recentPoints[snapshot.recentPointCount - 1];
     return snapshot.pointCount ? &snapshot.points[snapshot.pointCount - 1] : nullptr;
 }
 void resetRenderCache() {
     renderedWeather = renderedGlucose = renderedMinute = renderedGraphBucket = renderedLatestEpoch =
-        renderedRequestStep = -1;
+        renderedRequestStep = renderedInsulin = -1;
     renderedLatestValue = -1;
-    renderedPoints = size_t(-1);
+    renderedPoints = renderedRecentPoints = size_t(-1);
     renderedGlucoseError[0] = renderedWeatherError[0] = 0;
 }
 String displayCity() {
@@ -163,6 +195,7 @@ lv_obj_t *button(lv_obj_t *parent, int x, int y, int w, const char *text, lv_eve
     lv_obj_set_style_border_color(b, c(theme::Grid), 0);
     lv_obj_set_style_radius(b, 14, 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_pad_hor(b, 4, 0);
     lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, userData);
     lv_obj_t *l = lv_label_create(b);
     lv_label_set_text(l, text);
@@ -187,15 +220,58 @@ void drawDashes(lv_draw_ctx_t *ctx, int x, int y, int width, uint32_t color) {
     for (int offset = 0; offset < width; offset += 16)
         drawLine(ctx, x + offset, y, x + std::min(offset + 7, width), y, color, 1);
 }
-void drawDottedSegment(lv_draw_ctx_t *ctx, double x1, double y1, double x2, double y2,
-                       uint32_t color) {
-    const double dx = x2 - x1, dy = y2 - y1, length = std::hypot(dx, dy);
-    if (length < 2)
-        return;
-    for (double at = 0; at < length; at += 9) {
-        const double end = std::min(at + 4.0, length);
-        drawLine(ctx, x1 + dx * at / length, y1 + dy * at / length, x1 + dx * end / length,
-                 y1 + dy * end / length, color, 2);
+void drawDottedPolyline(lv_draw_ctx_t *ctx, const gluco::Point *pts, size_t count, int64_t now,
+                        int x, int y, int w, int h, int low, int high) {
+    const auto py = [&](double g) { return y + h - (g - low) * h / (high - low); };
+    double patternPhase = 0.0;
+    constexpr double kDashLen = 4.0;
+    constexpr double kGapLen = 4.0;
+    constexpr double kPeriod = kDashLen + kGapLen;
+
+    for (size_t i = 1; i < count; ++i) {
+        const auto &pA = pts[i - 1], &pB = pts[i];
+        if (!gluco::graphConnect(pA, pB)) {
+            patternPhase = 0.0;
+            continue;
+        }
+        const double xA = x + gluco::graphX(pA.epoch, now, w), yA = py(pA.glucose);
+        const double xB = x + gluco::graphX(pB.epoch, now, w), yB = py(pB.glucose);
+        const double dx = xB - xA, dy = yB - yA;
+        const double segLen = std::hypot(dx, dy);
+        if (segLen < 0.5)
+            continue;
+
+        double at = 0.0;
+        while (at < segLen) {
+            if (patternPhase < kDashLen) {
+                const double dashRemaining = kDashLen - patternPhase;
+                const double segRemaining = segLen - at;
+                const double chunk = std::min(dashRemaining, segRemaining);
+                const double nextAt = at + chunk;
+
+                const double midAt = at + chunk * 0.5;
+                const double t = midAt / segLen;
+                const double g = pA.glucose + t * (pB.glucose - pA.glucose);
+                const uint32_t color = curveColor(g);
+
+                drawLine(ctx, xA + dx * at / segLen, yA + dy * at / segLen,
+                         xA + dx * nextAt / segLen, yA + dy * nextAt / segLen, color, 2);
+
+                at = nextAt;
+                patternPhase += chunk;
+                if (patternPhase >= kPeriod)
+                    patternPhase -= kPeriod;
+            } else {
+                const double gapRemaining = kPeriod - patternPhase;
+                const double segRemaining = segLen - at;
+                const double chunk = std::min(gapRemaining, segRemaining);
+
+                at += chunk;
+                patternPhase += chunk;
+                if (patternPhase >= kPeriod)
+                    patternPhase -= kPeriod;
+            }
+        }
     }
 }
 double slope(const gluco::Point &a, const gluco::Point &b) {
@@ -333,21 +409,53 @@ void drawGraph(lv_event_t *e) {
             value = std::max<double>(std::min(a.glucose, b.glucose),
                                      std::min<double>(std::max(a.glucose, b.glucose), value));
             const double nextX = x0 + (x1 - x0) * t, nextY = py(value);
-            drawLine(ctx, lastX, lastY, nextX, nextY, rangeColor(value), 3);
+            drawLine(ctx, lastX, lastY, nextX, nextY, curveColor(value), 3);
             lastX = nextX;
             lastY = nextY;
         }
     }
+    gluco::Point dottedPoints[gluco::kMaxRecentPoints + 2];
+    size_t dottedCount = 0;
+    if (snapshot.pointCount) {
+        const auto &last = snapshot.points[snapshot.pointCount - 1];
+        if (last.epoch >= now - gluco::kHistorySeconds && last.epoch <= now)
+            dottedPoints[dottedCount++] = last;
+    }
+    const int64_t lastAnchorEpoch = dottedCount ? dottedPoints[0].epoch : 0;
+    for (size_t i = 0; i < snapshot.recentPointCount; ++i) {
+        const auto &rp = snapshot.recentPoints[i];
+        if (rp.epoch > lastAnchorEpoch && rp.epoch >= now - gluco::kHistorySeconds &&
+            rp.epoch <= now && gluco::range(rp.glucose) != gluco::Range::Invalid) {
+            if (!dottedCount || rp.epoch > dottedPoints[dottedCount - 1].epoch) {
+                dottedPoints[dottedCount++] = rp;
+            } else if (dottedCount && rp.epoch == dottedPoints[dottedCount - 1].epoch) {
+                dottedPoints[dottedCount - 1] = rp;
+            }
+        }
+    }
+    if (snapshot.currentValid && snapshot.current.epoch >= now - gluco::kHistorySeconds &&
+        snapshot.current.epoch <= now &&
+        gluco::range(snapshot.current.glucose) != gluco::Range::Invalid) {
+        if (!dottedCount || snapshot.current.epoch > dottedPoints[dottedCount - 1].epoch) {
+            dottedPoints[dottedCount++] = snapshot.current;
+        } else if (dottedCount && snapshot.current.epoch == dottedPoints[dottedCount - 1].epoch) {
+            dottedPoints[dottedCount - 1] = snapshot.current;
+        }
+    }
+    if (dottedCount >= 2) {
+        drawDottedPolyline(ctx, dottedPoints, dottedCount, now, x, y, w, h, low, high);
+    }
+    const gluco::Point *latest = nullptr;
     if (snapshot.currentValid && snapshot.current.epoch >= now - gluco::kHistorySeconds &&
         snapshot.current.epoch <= now) {
-        const auto &p = snapshot.current;
-        const double px = x + gluco::graphX(p.epoch, now, w), yy = py(p.glucose);
-        if (snapshot.pointCount) {
-            const auto &last = snapshot.points[snapshot.pointCount - 1];
-            if (last.epoch >= now - gluco::kHistorySeconds && gluco::graphConnect(last, p))
-                drawDottedSegment(ctx, x + gluco::graphX(last.epoch, now, w), py(last.glucose), px,
-                                  yy, rangeColor(p.glucose));
-        }
+        latest = &snapshot.current;
+    } else if (snapshot.recentPointCount) {
+        const auto &rp = snapshot.recentPoints[snapshot.recentPointCount - 1];
+        if (rp.epoch >= now - gluco::kHistorySeconds && rp.epoch <= now)
+            latest = &rp;
+    }
+    if (latest) {
+        const double px = x + gluco::graphX(latest->epoch, now, w), yy = py(latest->glucose);
         lv_draw_rect_dsc_t dot;
         lv_draw_rect_dsc_init(&dot);
         dot.bg_color = c(theme::Ink);
@@ -355,10 +463,69 @@ void drawGraph(lv_event_t *e) {
         lv_area_t ring{lv_coord_t(px - 6), lv_coord_t(yy - 6), lv_coord_t(px + 6),
                        lv_coord_t(yy + 6)};
         lv_draw_rect(ctx, &dot, &ring);
-        dot.bg_color = c(rangeColor(p.glucose));
+        dot.bg_color = c(rangeColor(latest->glucose));
         lv_area_t center{lv_coord_t(px - 4), lv_coord_t(yy - 4), lv_coord_t(px + 4),
                          lv_coord_t(yy + 4)};
         lv_draw_rect(ctx, &dot, &center);
+    }
+    // Marcas de insulina en la gráfica principal (últimas 12 horas)
+    for (size_t i = 0; i < snapshot.insulinCount; ++i) {
+        auto entry = snapshot.insulinEntries[i];
+        if (entry.epoch > now && entry.epoch <= now + 300)
+            entry.epoch = now;
+        if (entry.epoch < now - gluco::kHistorySeconds || entry.epoch > now)
+            continue;
+        if (entry.bolus <= 0.001f && entry.basal <= 0.001f)
+            continue;
+        const int ix = x + int(std::lround(gluco::graphX(entry.epoch, now, w)));
+        const bool isBolus = entry.bolus > 0.001f;
+        const uint32_t insColor = isBolus ? 0x00D9F5 : 0xBA68C8;
+
+        // Pincho vertical completo hasta arriba de la gráfica
+        const int pinTop = y + 26;
+        for (int vy = pinTop; vy < y + h - 20; vy += 6) {
+            drawLine(ctx, ix, vy, ix, std::min(vy + 3, y + h - 20), insColor, 1);
+        }
+        drawLine(ctx, ix, y + h - 22, ix, y + h, insColor, 3);
+
+        // Cabeza del pincho (indicador circular tipo chincheta)
+        lv_draw_rect_dsc_t pinHead;
+        lv_draw_rect_dsc_init(&pinHead);
+        pinHead.bg_color = c(insColor);
+        pinHead.radius = LV_RADIUS_CIRCLE;
+        lv_area_t pArea{lv_coord_t(ix - 5), lv_coord_t(pinTop - 5), lv_coord_t(ix + 5), lv_coord_t(pinTop + 5)};
+        lv_draw_rect(ctx, &pinHead, &pArea);
+
+        pinHead.bg_color = c(0x0E1A22);
+        lv_area_t pInner{lv_coord_t(ix - 2), lv_coord_t(pinTop - 2), lv_coord_t(ix + 2), lv_coord_t(pinTop + 2)};
+        lv_draw_rect(ctx, &pinHead, &pInner);
+
+        char doseText[12];
+        if (isBolus) {
+            if (std::abs(entry.bolus - std::round(entry.bolus)) < 0.05f)
+                snprintf(doseText, sizeof(doseText), "%.0fU", entry.bolus);
+            else
+                snprintf(doseText, sizeof(doseText), "%.1fU", entry.bolus);
+        } else {
+            snprintf(doseText, sizeof(doseText), "%.0fB", entry.basal);
+        }
+
+        const int badgeW = 38;
+        const int badgeH = 18;
+        const int bx = std::max(x, std::min(ix - badgeW / 2, x + w - badgeW));
+        const int by = y + h - 20;
+
+        lv_draw_rect_dsc_t badge;
+        lv_draw_rect_dsc_init(&badge);
+        badge.bg_color = c(0x0E1A22);
+        badge.bg_opa = LV_OPA_COVER;
+        badge.border_width = 1;
+        badge.border_color = c(insColor);
+        badge.radius = 5;
+        lv_area_t bArea{lv_coord_t(bx), lv_coord_t(by), lv_coord_t(bx + badgeW), lv_coord_t(by + badgeH)};
+        lv_draw_rect(ctx, &badge, &bArea);
+
+        drawText(ctx, bx, by + 2, badgeW, doseText, insColor, LV_TEXT_ALIGN_CENTER);
     }
     if (!selectedGraphEpoch)
         return;
@@ -369,6 +536,29 @@ void drawGraph(lv_event_t *e) {
         if (snapshot.points[i].epoch == selectedGraphEpoch) {
             selected = &snapshot.points[i];
             break;
+        }
+    }
+    for (size_t i = 0; !selected && i < snapshot.recentPointCount; ++i) {
+        if (snapshot.recentPoints[i].epoch == selectedGraphEpoch) {
+            selected = &snapshot.recentPoints[i];
+            break;
+        }
+    }
+    if (!selected) {
+        int64_t minDiff = 3600;
+        for (size_t i = 0; i < snapshot.pointCount; ++i) {
+            int64_t diff = std::abs(snapshot.points[i].epoch - selectedGraphEpoch);
+            if (diff < minDiff) {
+                minDiff = diff;
+                selected = &snapshot.points[i];
+            }
+        }
+        for (size_t i = 0; i < snapshot.recentPointCount; ++i) {
+            int64_t diff = std::abs(snapshot.recentPoints[i].epoch - selectedGraphEpoch);
+            if (diff < minDiff) {
+                minDiff = diff;
+                selected = &snapshot.recentPoints[i];
+            }
         }
     }
     if (!selected || selected->epoch < now - gluco::kHistorySeconds || selected->epoch > now)
@@ -388,21 +578,39 @@ void drawGraph(lv_event_t *e) {
     localtime_r(&timestamp, &local);
     char stamp[20] = "--/-- --:--";
     strftime(stamp, sizeof(stamp), "%d/%m %H:%M", &local);
-    char detail[48];
+    char detail[64];
     snprintf(detail, sizeof(detail), "%s   %d mg/dL", stamp, int(selected->glucose));
-    const int tooltipX = std::max(x + 190, std::min(sx - 112, bounds.x2 - 239));
+
+    for (size_t i = 0; i < snapshot.insulinCount; ++i) {
+        const auto &entry = snapshot.insulinEntries[i];
+        if (std::abs(entry.epoch - selected->epoch) <= 900) {
+            if (entry.bolus > 0.001f && entry.carbs > 0.5f) {
+                snprintf(detail, sizeof(detail), "%s  %d mg/dL · %.1fU (%dg)",
+                         stamp, int(selected->glucose), entry.bolus, int(entry.carbs));
+            } else if (entry.bolus > 0.001f) {
+                snprintf(detail, sizeof(detail), "%s  %d mg/dL · %.1fU",
+                         stamp, int(selected->glucose), entry.bolus);
+            } else if (entry.basal > 0.001f) {
+                snprintf(detail, sizeof(detail), "%s  %d mg/dL · %.0fB",
+                         stamp, int(selected->glucose), entry.basal);
+            }
+            break;
+        }
+    }
+    const int tipW = 266;
+    const int tooltipX = std::max(x + 150, std::min(sx - tipW / 2, bounds.x2 - tipW - 4));
     lv_draw_rect_dsc_t bubble;
     lv_draw_rect_dsc_init(&bubble);
     bubble.bg_color = c(theme::Button);
     bubble.bg_opa = LV_OPA_COVER;
     bubble.radius = 7;
-    lv_area_t tooltip{lv_coord_t(tooltipX), lv_coord_t(bounds.y1 + 3), lv_coord_t(tooltipX + 234),
+    lv_area_t tooltip{lv_coord_t(tooltipX), lv_coord_t(bounds.y1 + 3), lv_coord_t(tooltipX + tipW),
                       lv_coord_t(bounds.y1 + 27)};
     lv_draw_rect(ctx, &bubble, &tooltip);
-    drawText(ctx, tooltipX + 8, bounds.y1 + 5, 218, detail, theme::Ink, LV_TEXT_ALIGN_CENTER);
+    drawText(ctx, tooltipX + 4, bounds.y1 + 5, tipW - 8, detail, theme::Ink, LV_TEXT_ALIGN_CENTER);
 }
 void chooseGraphPoint(lv_event_t *event) {
-    if (!snapshot.pointCount && !snapshot.currentValid)
+    if (!snapshot.pointCount && !snapshot.currentValid && !snapshot.recentPointCount)
         return;
     lv_point_t touch{};
     lv_indev_t *indev = lv_indev_get_act();
@@ -429,11 +637,51 @@ void chooseGraphPoint(lv_event_t *event) {
             closestEpoch = p.epoch;
         }
     }
+    for (size_t i = 0; i < snapshot.recentPointCount; ++i) {
+        const auto &p = snapshot.recentPoints[i];
+        if (p.epoch < now - gluco::kHistorySeconds || p.epoch > now)
+            continue;
+        const int px = x + int(std::lround(gluco::graphX(p.epoch, now, w)));
+        const int distance = std::abs(px - touch.x);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            closestEpoch = p.epoch;
+        }
+    }
     if (snapshot.currentValid && snapshot.current.epoch >= now - gluco::kHistorySeconds &&
         snapshot.current.epoch <= now) {
         const int px = x + int(std::lround(gluco::graphX(snapshot.current.epoch, now, w)));
         if (std::abs(px - touch.x) <= bestDistance)
             closestEpoch = snapshot.current.epoch;
+    }
+    // Snap to nearest reading when tapping on/near an insulin entry pincho
+    for (size_t i = 0; i < snapshot.insulinCount; ++i) {
+        const auto &entry = snapshot.insulinEntries[i];
+        if (entry.epoch < now - gluco::kHistorySeconds || entry.epoch > now)
+            continue;
+        const int ix = x + int(std::lround(gluco::graphX(entry.epoch, now, w)));
+        if (std::abs(ix - touch.x) <= 22) {
+            int64_t bestNearEpoch = 0;
+            int64_t bestDiff = 7200;
+            for (size_t p = 0; p < snapshot.pointCount; ++p) {
+                int64_t diff = std::abs(snapshot.points[p].epoch - entry.epoch);
+                if (diff < bestDiff) {
+                    bestDiff = diff;
+                    bestNearEpoch = snapshot.points[p].epoch;
+                }
+            }
+            for (size_t p = 0; p < snapshot.recentPointCount; ++p) {
+                int64_t diff = std::abs(snapshot.recentPoints[p].epoch - entry.epoch);
+                if (diff < bestDiff) {
+                    bestDiff = diff;
+                    bestNearEpoch = snapshot.recentPoints[p].epoch;
+                }
+            }
+            if (bestNearEpoch) {
+                closestEpoch = bestNearEpoch;
+                break;
+            }
+        }
     }
     if (closestEpoch && closestEpoch != selectedGraphEpoch) {
         selectedGraphEpoch = closestEpoch;
@@ -513,6 +761,15 @@ void requestSummary(lv_event_t *) {
     forecastView = ForecastView::Summary;
     updateForecast();
 }
+void requestInsulin(lv_event_t *) {
+    forecastView = ForecastView::Insulin;
+    updateForecast();
+}
+void toggleInsulinView(lv_event_t *) {
+    insulinViewWeekly = !insulinViewWeekly;
+    updateForecast();
+}
+void drawInsulinTimeline(lv_event_t *e);
 void buildHome() {
     portalStop();
     configUiActive.store(false, std::memory_order_release);
@@ -627,38 +884,38 @@ void buildClock() {
     lv_obj_clean(lv_scr_act());
     base(lv_scr_act());
 
-    lv_obj_t *clockCard = lv_obj_create(lv_scr_act());
-    lv_obj_set_pos(clockCard, 18, 12);
-    lv_obj_set_size(clockCard, 372, 128);
-    lv_obj_set_style_bg_color(clockCard, c(theme::Card), 0);
-    lv_obj_set_style_border_width(clockCard, 1, 0);
-    lv_obj_set_style_border_color(clockCard, c(theme::Grid), 0);
-    lv_obj_set_style_radius(clockCard, 18, 0);
-    lv_obj_set_style_pad_all(clockCard, 0, 0);
-    lv_obj_clear_flag(clockCard, LV_OBJ_FLAG_SCROLLABLE);
+    clockCardWidget = lv_obj_create(lv_scr_act());
+    lv_obj_set_pos(clockCardWidget, 18, 12);
+    lv_obj_set_size(clockCardWidget, 372, 128);
+    lv_obj_set_style_bg_color(clockCardWidget, c(theme::Card), 0);
+    lv_obj_set_style_border_width(clockCardWidget, 1, 0);
+    lv_obj_set_style_border_color(clockCardWidget, c(theme::Grid), 0);
+    lv_obj_set_style_radius(clockCardWidget, 18, 0);
+    lv_obj_set_style_pad_all(clockCardWidget, 0, 0);
+    lv_obj_clear_flag(clockCardWidget, LV_OBJ_FLAG_SCROLLABLE);
 
-    clockBig = label(clockCard, 24, 14, 324, "--:--", &fonts::montserrat48);
-    clockDate = label(clockCard, 26, 76, 320, "Esperando hora", &fonts::montserrat20, theme::Muted);
+    clockBig = label(clockCardWidget, 24, 14, 324, "--:--", &fonts::montserrat48);
+    clockDate = label(clockCardWidget, 26, 76, 320, "Esperando hora", &fonts::montserrat20, theme::Muted);
     lv_label_set_long_mode(clockDate, LV_LABEL_LONG_WRAP);
 
-    lv_obj_t *weatherCard = lv_obj_create(lv_scr_act());
-    lv_obj_set_pos(weatherCard, 410, 12);
-    lv_obj_set_size(weatherCard, 372, 128);
-    lv_obj_set_style_bg_color(weatherCard, c(theme::Card), 0);
-    lv_obj_set_style_border_width(weatherCard, 1, 0);
-    lv_obj_set_style_border_color(weatherCard, c(theme::Grid), 0);
-    lv_obj_set_style_radius(weatherCard, 18, 0);
-    lv_obj_clear_flag(weatherCard, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(weatherCard, 0, 0);
+    weatherCardWidget = lv_obj_create(lv_scr_act());
+    lv_obj_set_pos(weatherCardWidget, 410, 12);
+    lv_obj_set_size(weatherCardWidget, 372, 128);
+    lv_obj_set_style_bg_color(weatherCardWidget, c(theme::Card), 0);
+    lv_obj_set_style_border_width(weatherCardWidget, 1, 0);
+    lv_obj_set_style_border_color(weatherCardWidget, c(theme::Grid), 0);
+    lv_obj_set_style_radius(weatherCardWidget, 18, 0);
+    lv_obj_clear_flag(weatherCardWidget, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(weatherCardWidget, 0, 0);
 
     clockGlyph.background = theme::Card;
-    clockIcon = weathericons::create(weatherCard, 16, 20, 88, &clockGlyph);
-    clockWeather = label(weatherCard, 116, 12, 240, "-- °C", &fonts::montserrat48);
+    clockIcon = weathericons::create(weatherCardWidget, 16, 20, 88, &clockGlyph);
+    clockWeather = label(weatherCardWidget, 116, 12, 240, "-- °C", &fonts::montserrat48);
     clockSummary =
-        label(weatherCard, 116, 68, 240, "Clima pendiente", &fonts::montserrat14, theme::Muted);
+        label(weatherCardWidget, 116, 68, 240, "Clima pendiente", &fonts::montserrat14, theme::Muted);
     lv_label_set_long_mode(clockSummary, LV_LABEL_LONG_WRAP);
 
-    label(lv_scr_act(), 24, 148, 400, "PRONÓSTICO LOCAL", &fonts::montserrat16, theme::Blue);
+    forecastTitleWidget = label(lv_scr_act(), 24, 148, 400, "PRONÓSTICO LOCAL", &fonts::montserrat16, theme::Blue);
 
     hoursBox = lv_obj_create(lv_scr_act());
     lv_obj_set_pos(hoursBox, 18, 172);
@@ -671,10 +928,11 @@ void buildClock() {
     lv_obj_clear_flag(hoursBox, LV_OBJ_FLAG_SCROLLABLE);
     label(hoursBox, 35, 95, 690, "Esperando pronóstico...", &fonts::montserrat20, theme::Muted);
 
-    button(lv_scr_act(), 18, 418, 145, "Glucosa", homePage);
-    hoursTab = button(lv_scr_act(), 171, 418, 145, "Por horas", requestHours);
-    daysTab = button(lv_scr_act(), 324, 418, 145, "4 días", requestDays);
-    summaryTab = button(lv_scr_act(), 477, 418, 185, "Resumen día", requestSummary);
+    button(lv_scr_act(), 18, 418, 124, "Glucosa", homePage);
+    hoursTab = button(lv_scr_act(), 150, 418, 124, "Por horas", requestHours);
+    daysTab = button(lv_scr_act(), 282, 418, 104, "4 días", requestDays);
+    summaryTab = button(lv_scr_act(), 394, 418, 124, "Resumen", requestSummary);
+    insulinTab = button(lv_scr_act(), 526, 418, 136, "Insulina", requestInsulin);
     lv_obj_t *clockGear = button(lv_scr_act(), 670, 418, 112, "", settings);
     lv_obj_add_event_cb(clockGear, drawSettingsIcon, LV_EVENT_DRAW_MAIN, nullptr);
 }
@@ -1721,16 +1979,190 @@ void updateWeather(lv_obj_t *temp, lv_obj_t *summary, lv_obj_t *icon, weatherico
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(icon);
 }
+void drawInsulinTimeline(lv_event_t *e) {
+    lv_area_t bounds;
+    lv_obj_get_coords(lv_event_get_target(e), &bounds);
+    auto *ctx = lv_event_get_draw_ctx(e);
+    const int w = lv_area_get_width(&bounds);
+    const int h = lv_area_get_height(&bounds);
+    const int cy = bounds.y1 + h - 28;
+    const int64_t now = time(nullptr);
+    time_t tnow = now >= 1700000000 ? now : 1700000000;
+    tm loc{};
+    localtime_r(&tnow, &loc);
+    loc.tm_hour = 0;
+    loc.tm_min = 0;
+    loc.tm_sec = 0;
+    const int64_t dayStart = mktime(&loc);
+
+    if (!insulinViewWeekly) {
+        const int64_t dayEnd = dayStart + 86400;
+
+        drawLine(ctx, bounds.x1 + 18, cy, bounds.x1 + w - 18, cy, theme::Grid, 1);
+
+        for (int hr = 0; hr <= 24; hr += 6) {
+            const int px = bounds.x1 + 18 + hr * (w - 36) / 24;
+            drawLine(ctx, px, bounds.y1 + 4, px, cy, theme::Grid, 1);
+            char htxt[8];
+            snprintf(htxt, sizeof(htxt), "%02d:00", hr == 24 ? 0 : hr);
+            drawText(ctx, px - 24, cy + 6, 48, htxt, theme::Muted, LV_TEXT_ALIGN_CENTER);
+        }
+
+        if (now >= dayStart && now <= dayEnd) {
+            const int curX = bounds.x1 + 18 + int(std::lround(double(now - dayStart) * (w - 36) / 86400.0));
+            drawLine(ctx, curX, bounds.y1 + 4, curX, cy, theme::Green, 1);
+        }
+
+        float maxDose = 5.0f;
+        for (size_t i = 0; i < snapshot.insulinCount; ++i) {
+            const auto &entry = snapshot.insulinEntries[i];
+            if (entry.epoch >= dayStart && entry.epoch <= dayEnd) {
+                if (entry.bolus > maxDose)
+                    maxDose = entry.bolus;
+                if (entry.basal > maxDose)
+                    maxDose = entry.basal;
+            }
+        }
+        const int maxH = cy - (bounds.y1 + 45);
+
+        for (size_t i = 0; i < snapshot.insulinCount; ++i) {
+            const auto &entry = snapshot.insulinEntries[i];
+            if (entry.epoch < dayStart || entry.epoch > dayEnd)
+                continue;
+            const int px = bounds.x1 + 18 + int(std::lround(double(entry.epoch - dayStart) * (w - 36) / 86400.0));
+
+            if (entry.bolus > 0.001f) {
+                const int barH = std::max(20, std::min(maxH, int(std::lround(double(entry.bolus) * maxH / maxDose))));
+                const int barY = cy - barH;
+                drawLine(ctx, px, cy, px, barY, 0x00D9F5, 4);
+
+                lv_draw_rect_dsc_t cap;
+                lv_draw_rect_dsc_init(&cap);
+                cap.bg_color = c(0x00D9F5);
+                cap.radius = LV_RADIUS_CIRCLE;
+                lv_area_t cArea{lv_coord_t(px - 4), lv_coord_t(barY - 4), lv_coord_t(px + 4), lv_coord_t(barY + 4)};
+                lv_draw_rect(ctx, &cap, &cArea);
+
+                char dTxt[20];
+                if (entry.carbs > 0.5f) {
+                    if (std::abs(entry.bolus - std::round(entry.bolus)) < 0.05f)
+                        snprintf(dTxt, sizeof(dTxt), "%.0f (%.0fg)", entry.bolus, entry.carbs);
+                    else
+                        snprintf(dTxt, sizeof(dTxt), "%.1f (%.0fg)", entry.bolus, entry.carbs);
+                } else {
+                    if (std::abs(entry.bolus - std::round(entry.bolus)) < 0.05f)
+                        snprintf(dTxt, sizeof(dTxt), "%.0fU", entry.bolus);
+                    else
+                        snprintf(dTxt, sizeof(dTxt), "%.1fU", entry.bolus);
+                }
+                drawText(ctx, px - 35, barY - 22, 70, dTxt, 0x00D9F5, LV_TEXT_ALIGN_CENTER);
+            }
+
+            if (entry.basal > 0.001f) {
+                const int barH = std::max(20, std::min(maxH, int(std::lround(double(entry.basal) * maxH / maxDose))));
+                const int barY = cy - barH;
+                drawLine(ctx, px, cy, px, barY, 0xBA68C8, 3);
+
+                lv_draw_rect_dsc_t bCap;
+                lv_draw_rect_dsc_init(&bCap);
+                bCap.bg_color = c(0xBA68C8);
+                bCap.radius = 2;
+                lv_area_t bArea{lv_coord_t(px - 3), lv_coord_t(barY - 3), lv_coord_t(px + 3), lv_coord_t(barY + 3)};
+                lv_draw_rect(ctx, &bCap, &bArea);
+
+                char bTxt[10];
+                snprintf(bTxt, sizeof(bTxt), "%.0fB", entry.basal);
+                drawText(ctx, px - 20, barY - 22, 40, bTxt, 0xBA68C8, LV_TEXT_ALIGN_CENTER);
+            }
+        }
+    } else {
+        struct DayData {
+            int64_t startEpoch = 0;
+            char name[12]{};
+            float bolus = 0.0f;
+            float basal = 0.0f;
+            float carbs = 0.0f;
+        } week[7];
+
+        const char *wNames[] = {"Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"};
+        float maxDayTotal = 15.0f;
+
+        for (int d = 0; d < 7; ++d) {
+            const int64_t dStart = dayStart - (6 - d) * 86400;
+            const int64_t dEnd = dStart + 86400;
+            week[d].startEpoch = dStart;
+            time_t dt = dStart;
+            tm dtm{};
+            localtime_r(&dt, &dtm);
+            snprintf(week[d].name, sizeof(week[d].name), "%s %d", wNames[dtm.tm_wday], dtm.tm_mday);
+
+            for (size_t i = 0; i < snapshot.insulinCount; ++i) {
+                const auto &entry = snapshot.insulinEntries[i];
+                if (entry.epoch >= dStart && entry.epoch < dEnd) {
+                    week[d].bolus += entry.bolus;
+                    week[d].basal += entry.basal;
+                    week[d].carbs += entry.carbs;
+                }
+            }
+            maxDayTotal = std::max(maxDayTotal, week[d].bolus + week[d].basal);
+        }
+
+        drawLine(ctx, bounds.x1 + 10, cy, bounds.x1 + w - 10, cy, theme::Grid, 1);
+        const int maxH = cy - (bounds.y1 + 45);
+
+        for (int d = 0; d < 7; ++d) {
+            const int colX = bounds.x1 + 30 + d * ((w - 60) / 6);
+            const float dayTot = week[d].bolus + week[d].basal;
+
+            if (dayTot > 0.001f) {
+                const int basalH = int(std::lround(double(week[d].basal) * maxH / maxDayTotal));
+                const int bolusH = int(std::lround(double(week[d].bolus) * maxH / maxDayTotal));
+
+                if (basalH > 0) {
+                    drawLine(ctx, colX, cy, colX, cy - basalH, 0xBA68C8, 14);
+                }
+                if (bolusH > 0) {
+                    drawLine(ctx, colX, cy - basalH, colX, cy - basalH - bolusH, 0x00D9F5, 14);
+                }
+
+                char totTxt[10];
+                snprintf(totTxt, sizeof(totTxt), "%.0f", dayTot);
+                // With drawLine width 14, cap extends 7px. textY at -24 gives clear separation with zero overlap!
+                const int textY = cy - basalH - bolusH - 24;
+                drawText(ctx, colX - 22, textY, 44, totTxt, theme::Ink, LV_TEXT_ALIGN_CENTER);
+            }
+
+            drawText(ctx, colX - 25, cy + 6, 50, week[d].name, theme::Muted, LV_TEXT_ALIGN_CENTER);
+        }
+    }
+}
 void updateForecast() {
     if (!hoursBox)
         return;
-    if (hoursTab && daysTab && summaryTab) {
+    if (clockCardWidget && weatherCardWidget && forecastTitleWidget) {
+        if (forecastView == ForecastView::Insulin) {
+            lv_obj_add_flag(clockCardWidget, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(weatherCardWidget, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(forecastTitleWidget, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(hoursBox, 18, 12);
+            lv_obj_set_size(hoursBox, 764, 396);
+        } else {
+            lv_obj_clear_flag(clockCardWidget, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(weatherCardWidget, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(forecastTitleWidget, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(hoursBox, 18, 172);
+            lv_obj_set_size(hoursBox, 764, 238);
+        }
+    }
+    if (hoursTab && daysTab && summaryTab && insulinTab) {
         lv_obj_set_style_bg_color(
             hoursTab, c(forecastView == ForecastView::Hours ? 0x1C563F : theme::Button), 0);
         lv_obj_set_style_bg_color(
             daysTab, c(forecastView == ForecastView::Days ? 0x1C563F : theme::Button), 0);
         lv_obj_set_style_bg_color(
             summaryTab, c(forecastView == ForecastView::Summary ? 0x1C563F : theme::Button), 0);
+        lv_obj_set_style_bg_color(
+            insulinTab, c(forecastView == ForecastView::Insulin ? 0x1C563F : theme::Button), 0);
     }
     lv_obj_clean(hoursBox);
     if (forecastView == ForecastView::Hours) {
@@ -1880,12 +2312,10 @@ void updateForecast() {
 
             char countStr[48];
             snprintf(countStr, sizeof(countStr), "Muestras 24h: %u", unsigned(snapshot.dailySummary.totalReadings));
-            label(statsCard, 14, 148, 214, countStr, &fonts::montserrat14, theme::Muted);
-            label(statsCard, 14, 178, 214, "Diabetes:M · RAM (sin desgaste)", &fonts::montserrat14, theme::Blue);
+            label(statsCard, 14, 156, 214, countStr, &fonts::montserrat14, theme::Muted);
         } else {
             label(statsCard, 14, 50, 214, "---", &fonts::montserrat32, theme::Muted);
             label(statsCard, 14, 110, 214, "Historial vacío", &fonts::montserrat16, theme::Muted);
-            label(statsCard, 14, 150, 214, "Se sincroniza de Diabetes:M en RAM", &fonts::montserrat14, theme::Muted);
         }
 
         // Card 3: Paciente y Diabetes:M
@@ -1918,6 +2348,157 @@ void updateForecast() {
             label(syncCard, 14, 90, 218, "Sin cuenta Diabetes:M", &fonts::montserrat16, theme::Orange);
             label(syncCard, 14, 122, 218, "Vincula este usuario en Ajustes para subir lecturas.", &fonts::montserrat14, theme::Muted);
         }
+    } else if (forecastView == ForecastView::Insulin) {
+        auto *chartCard = lv_obj_create(hoursBox);
+        lv_obj_set_pos(chartCard, 8, 8);
+        lv_obj_set_size(chartCard, 508, 380);
+        lv_obj_set_style_bg_color(chartCard, c(theme::Background), 0);
+        lv_obj_set_style_border_width(chartCard, 1, 0);
+        lv_obj_set_style_border_color(chartCard, c(theme::Grid), 0);
+        lv_obj_set_style_radius(chartCard, 16, 0);
+        lv_obj_set_style_pad_all(chartCard, 0, 0);
+        lv_obj_clear_flag(chartCard, LV_OBJ_FLAG_SCROLLABLE);
+
+        label(chartCard, 14, 12, 260,
+              insulinViewWeekly ? "HISTORIAL 7 DÍAS (INSULINA)" : "REGISTROS DE HOY (INSULINA)",
+              &fonts::montserrat14, theme::Blue);
+
+        lv_obj_t *tBtn = lv_btn_create(chartCard);
+        lv_obj_set_pos(tBtn, 360, 8);
+        lv_obj_set_size(tBtn, 136, 28);
+        lv_obj_set_style_bg_color(tBtn, c(theme::Button), 0);
+        lv_obj_set_style_border_width(tBtn, 1, 0);
+        lv_obj_set_style_border_color(tBtn, c(theme::Grid), 0);
+        lv_obj_set_style_radius(tBtn, 8, 0);
+        lv_obj_set_style_pad_all(tBtn, 0, 0);
+        lv_obj_add_event_cb(tBtn, toggleInsulinView, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *tLbl = lv_label_create(tBtn);
+        lv_label_set_text(tLbl, insulinViewWeekly ? "Ver Hoy (24h)" : "Ver Semana (7d)");
+        lv_obj_set_style_text_font(tLbl, &fonts::montserrat14, 0);
+        lv_obj_set_style_text_color(tLbl, c(theme::Ink), 0);
+        lv_obj_center(tLbl);
+
+        auto *legBolo = lv_obj_create(chartCard);
+        lv_obj_set_pos(legBolo, 14, 42);
+        lv_obj_set_size(legBolo, 8, 8);
+        lv_obj_set_style_bg_color(legBolo, c(0x00D9F5), 0);
+        lv_obj_set_style_radius(legBolo, 2, 0);
+        lv_obj_set_style_border_width(legBolo, 0, 0);
+        label(chartCard, 26, 38, 85, "Bolo rápido", &fonts::montserrat14, 0x00D9F5);
+
+        auto *legBasal = lv_obj_create(chartCard);
+        lv_obj_set_pos(legBasal, 118, 42);
+        lv_obj_set_size(legBasal, 8, 8);
+        lv_obj_set_style_bg_color(legBasal, c(0xBA68C8), 0);
+        lv_obj_set_style_radius(legBasal, 2, 0);
+        lv_obj_set_style_border_width(legBasal, 0, 0);
+        label(chartCard, 130, 38, 85, "Basal lenta", &fonts::montserrat14, 0xBA68C8);
+
+        if (!insulinViewWeekly) {
+            auto *legNow = lv_obj_create(chartCard);
+            lv_obj_set_pos(legNow, 222, 42);
+            lv_obj_set_size(legNow, 8, 8);
+            lv_obj_set_style_bg_color(legNow, c(theme::Green), 0);
+            lv_obj_set_style_radius(legNow, 2, 0);
+            lv_obj_set_style_border_width(legNow, 0, 0);
+            label(chartCard, 234, 38, 90, "Hora actual", &fonts::montserrat14, theme::Green);
+        }
+
+        auto *chartArea = lv_obj_create(chartCard);
+        lv_obj_set_pos(chartArea, 6, 62);
+        lv_obj_set_size(chartArea, 496, 312);
+        lv_obj_set_style_bg_opa(chartArea, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(chartArea, 0, 0);
+        lv_obj_set_style_pad_all(chartArea, 0, 0);
+        lv_obj_clear_flag(chartArea, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(chartArea, drawInsulinTimeline, LV_EVENT_DRAW_MAIN, nullptr);
+
+        auto *summaryCard = lv_obj_create(hoursBox);
+        lv_obj_set_pos(summaryCard, 524, 8);
+        lv_obj_set_size(summaryCard, 232, 380);
+        lv_obj_set_style_bg_color(summaryCard, c(theme::Background), 0);
+        lv_obj_set_style_border_width(summaryCard, 1, 0);
+        lv_obj_set_style_border_color(summaryCard, c(theme::Grid), 0);
+        lv_obj_set_style_radius(summaryCard, 16, 0);
+        lv_obj_set_style_pad_all(summaryCard, 0, 0);
+        lv_obj_clear_flag(summaryCard, LV_OBJ_FLAG_SCROLLABLE);
+
+        label(summaryCard, 14, 14, 204, insulinViewWeekly ? "TOTAL SEMANA (7D)" : "TOTAL DE HOY",
+              &fonts::montserrat14, theme::Blue);
+
+        const int64_t now = time(nullptr);
+        time_t tnow = now >= 1700000000 ? now : 1700000000;
+        tm loc{};
+        localtime_r(&tnow, &loc);
+        loc.tm_hour = 0;
+        loc.tm_min = 0;
+        loc.tm_sec = 0;
+        const int64_t dayStart = mktime(&loc);
+        const int64_t periodStart = insulinViewWeekly ? (dayStart - 6 * 86400) : dayStart;
+        const int64_t periodEnd = dayStart + 86400;
+
+        float sumBolus = 0.0f, sumBasal = 0.0f, sumCarbs = 0.0f;
+        size_t countInPeriod = 0;
+        for (size_t i = 0; i < snapshot.insulinCount; ++i) {
+            const auto &entry = snapshot.insulinEntries[i];
+            if (entry.epoch >= periodStart && entry.epoch <= periodEnd) {
+                sumBolus += entry.bolus;
+                sumBasal += entry.basal;
+                sumCarbs += entry.carbs;
+                if (entry.bolus > 0.001f || entry.basal > 0.001f)
+                    countInPeriod++;
+            }
+        }
+        const float totalIns = sumBolus + sumBasal;
+
+        if (totalIns > 0.001f || countInPeriod > 0) {
+            char totStr[24];
+            snprintf(totStr, sizeof(totStr), "%.1f U", totalIns);
+            label(summaryCard, 14, 38, 204, totStr, &fonts::montserrat32, theme::Ink);
+
+            char subTot[64];
+            snprintf(subTot, sizeof(subTot), "%u administraciones", unsigned(countInPeriod));
+            label(summaryCard, 14, 80, 204, subTot, &fonts::montserrat14, theme::Muted);
+
+            auto *sep = lv_obj_create(summaryCard);
+            lv_obj_set_pos(sep, 14, 108);
+            lv_obj_set_size(sep, 204, 1);
+            lv_obj_set_style_bg_color(sep, c(theme::Grid), 0);
+            lv_obj_set_style_border_width(sep, 0, 0);
+            lv_obj_clear_flag(sep, LV_OBJ_FLAG_CLICKABLE);
+
+            char bStr[48];
+            snprintf(bStr, sizeof(bStr), "Bolo rápido: %.1f U", sumBolus);
+            label(summaryCard, 14, 120, 204, bStr, &fonts::montserrat16, 0x00D9F5);
+
+            char basStr[48];
+            snprintf(basStr, sizeof(basStr), "Basal lenta: %.1f U", sumBasal);
+            label(summaryCard, 14, 150, 204, basStr, &fonts::montserrat16, 0xBA68C8);
+
+            char ratStr[48];
+            const float bPct = (totalIns > 0.001f) ? (sumBolus * 100.0f / totalIns) : 0.0f;
+            snprintf(ratStr, sizeof(ratStr), "Ratio: %.0f%% / %.0f%%", bPct, 100.0f - bPct);
+            label(summaryCard, 14, 184, 204, ratStr, &fonts::montserrat14, theme::Ink);
+
+            if (sumCarbs > 0.5f) {
+                char cStr[48];
+                snprintf(cStr, sizeof(cStr), "Carbohidratos: %.0f g", sumCarbs);
+                label(summaryCard, 14, 218, 204, cStr, &fonts::montserrat14, theme::Yellow);
+            }
+
+            if (insulinViewWeekly) {
+                char avgStr[48];
+                snprintf(avgStr, sizeof(avgStr), "Media diaria: %.1f U", totalIns / 7.0f);
+                label(summaryCard, 14, 256, 204, avgStr, &fonts::montserrat14, theme::Muted);
+            }
+        } else {
+            label(summaryCard, 14, 48, 204, "-- U", &fonts::montserrat48, theme::Muted);
+            label(summaryCard, 14, 114, 204, "Sin registros", &fonts::montserrat16, theme::Muted);
+            label(summaryCard, 14, 150, 204,
+                  snapshot.activePatientDmLinked ? "Esperando registros de Diabetes:M..."
+                                                : "Vincula Diabetes:M en Ajustes para ver tus bolos.",
+                  &fonts::montserrat14, theme::Muted);
+        }
     }
 }
 
@@ -1930,8 +2511,23 @@ void uiInit() {
 }
 void uiShowSetup() { buildSettings(); }
 void uiShowHome() {
-    if (page == Page::Setup)
+    if (page == Page::Setup || page == Page::Clock || page == Page::Users)
         buildHome();
+}
+void uiShowClock() {
+    buildClock();
+    forecastView = ForecastView::Hours;
+    updateForecast();
+}
+void uiShowInsulin() {
+    buildClock();
+    forecastView = ForecastView::Insulin;
+    updateForecast();
+}
+void uiSetInsulinWeekly(bool weekly) {
+    insulinViewWeekly = weekly;
+    if (page == Page::Clock && forecastView == ForecastView::Insulin)
+        updateForecast();
 }
 void uiClearGraphSelection() {
     if (!selectedGraphEpoch)
@@ -2209,14 +2805,17 @@ void uiTick() {
     const int latestValue = latest ? latest->glucose : 0;
     const bool glucoseChanged =
         renderedGlucose != snapshot.glucoseFetched || renderedPoints != snapshot.pointCount ||
+        renderedRecentPoints != snapshot.recentPointCount ||
         renderedLatestEpoch != latestEpoch || renderedLatestValue != latestValue ||
         strcmp(renderedGlucoseError, snapshot.glucoseError);
     const int64_t requestStep = snapshot.glucoseRequestStartedMs ? 1 : 0;
+    const bool insulinChanged = renderedInsulin != snapshot.insulinFetched;
     const bool chartChanged =
         renderedGlucose != snapshot.glucoseFetched || renderedPoints != snapshot.pointCount ||
+        renderedRecentPoints != snapshot.recentPointCount ||
         renderedLatestEpoch != latestEpoch || renderedLatestValue != latestValue ||
         strcmp(renderedGlucoseError, snapshot.glucoseError) != 0 ||
-        requestStep != renderedRequestStep;
+        requestStep != renderedRequestStep || insulinChanged;
     if (selectedGraphEpoch && renderedGlucose >= 0 && snapshot.glucoseFetched > 0 &&
         snapshot.glucoseFetched != renderedGlucose)
         uiClearGraphSelection();
@@ -2227,7 +2826,12 @@ void uiTick() {
                 found = true;
                 break;
             }
-        if (snapshot.currentValid && snapshot.current.epoch == selectedGraphEpoch)
+        for (size_t i = 0; !found && i < snapshot.recentPointCount; ++i)
+            if (snapshot.recentPoints[i].epoch == selectedGraphEpoch) {
+                found = true;
+                break;
+            }
+        if (!found && snapshot.currentValid && snapshot.current.epoch == selectedGraphEpoch)
             found = true;
         if (!found)
             selectedGraphEpoch = 0;
@@ -2249,13 +2853,22 @@ void uiTick() {
                 lv_obj_set_style_bg_color(glucoseAccent, c(color), 0);
                 int diff = 0, minutes = 0;
                 char detail[80];
-                if (snapshot.currentValid && snapshot.pointCount &&
-                    snapshot.current.epoch - snapshot.points[snapshot.pointCount - 1].epoch >= 60 &&
-                    gluco::graphConnect(snapshot.points[snapshot.pointCount - 1],
-                                        snapshot.current)) {
-                    const auto &previous = snapshot.points[snapshot.pointCount - 1];
-                    diff = int(snapshot.current.glucose) - int(previous.glucose);
-                    minutes = int((snapshot.current.epoch - previous.epoch + 30) / 60);
+                const gluco::Point *prevPoint = nullptr;
+                if (snapshot.currentValid) {
+                    if (snapshot.recentPointCount >= 2 &&
+                        snapshot.recentPoints[snapshot.recentPointCount - 1].epoch == snapshot.current.epoch) {
+                        prevPoint = &snapshot.recentPoints[snapshot.recentPointCount - 2];
+                    } else if (snapshot.recentPointCount >= 1 &&
+                               snapshot.recentPoints[snapshot.recentPointCount - 1].epoch < snapshot.current.epoch) {
+                        prevPoint = &snapshot.recentPoints[snapshot.recentPointCount - 1];
+                    } else if (snapshot.pointCount) {
+                        prevPoint = &snapshot.points[snapshot.pointCount - 1];
+                    }
+                }
+                if (prevPoint && snapshot.current.epoch - prevPoint->epoch >= 60 &&
+                    gluco::graphConnect(*prevPoint, snapshot.current)) {
+                    diff = int(snapshot.current.glucose) - int(prevPoint->glucose);
+                    minutes = int((snapshot.current.epoch - prevPoint->epoch + 30) / 60);
                     snprintf(detail, sizeof(detail), "%+d en %d min", diff, minutes);
                 } else if (!snapshot.currentValid &&
                            gluco::delta(snapshot.points, snapshot.pointCount, diff, minutes))
@@ -2294,7 +2907,8 @@ void uiTick() {
             setClock(clockBig, clockDate);
         if (weatherChanged)
             updateWeather(clockWeather, clockSummary, clockIcon, clockGlyph);
-        if (weatherChanged || (glucoseChanged && forecastView == ForecastView::Summary))
+        if (weatherChanged || (glucoseChanged && forecastView == ForecastView::Summary) ||
+            ((glucoseChanged || insulinChanged) && forecastView == ForecastView::Insulin))
             updateForecast();
     } else if (page == Page::Settings && settingsWifiLabel) {
         const String connectedSsid = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : String();
@@ -2309,9 +2923,11 @@ void uiTick() {
     }
     renderedGlucose = snapshot.glucoseFetched;
     renderedPoints = snapshot.pointCount;
+    renderedRecentPoints = snapshot.recentPointCount;
     renderedLatestEpoch = latestEpoch;
     renderedLatestValue = latestValue;
     strlcpy(renderedGlucoseError, snapshot.glucoseError, sizeof(renderedGlucoseError));
     renderedWeather = snapshot.weatherFetched;
     strlcpy(renderedWeatherError, snapshot.weatherError, sizeof(renderedWeatherError));
+    renderedInsulin = snapshot.insulinFetched;
 }

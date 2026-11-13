@@ -92,10 +92,29 @@ int main(int argc, char **argv) {
     data.dailySummary.lowPercent = 0.0f;
     data.dailySummary.highPercent = 26.0f;
     data.dailySummary.totalReadings = 248;
-    data.pointCount = 144;
+    data.pointCount = 140;
     for (size_t i = 0; i < data.pointCount; ++i)
         data.points[i] = {now - 12 * 3600 + int64_t(i) * 300,
                           int16_t(126 + 40 * sin(i / 13.0) + 10 * sin(i / 3.0))};
+    data.recentPoints[0] = {now - 960, 168};
+    data.recentPoints[1] = {now - 720, 176};
+    data.recentPoints[2] = {now - 480, 184};
+    data.recentPoints[3] = {now - 240, 192};
+    data.recentPointCount = 4;
+    data.insulinEntries[0] = {now - 9 * 3600, 3.5f, 0.0f, 45.0f};
+    data.insulinEntries[1] = {now - 5 * 3600, 5.0f, 0.0f, 60.0f};
+    data.insulinEntries[2] = {now - 2 * 3600, 2.0f, 0.0f, 25.0f};
+    data.insulinEntries[3] = {now - 10 * 3600, 0.0f, 23.0f, 0.0f};
+    data.insulinEntries[4] = {now - 26 * 3600, 4.0f, 0.0f, 50.0f};
+    data.insulinEntries[5] = {now - 34 * 3600, 0.0f, 23.0f, 0.0f};
+    data.insulinEntries[6] = {now - 50 * 3600, 6.0f, 0.0f, 70.0f};
+    data.insulinEntries[7] = {now - 58 * 3600, 0.0f, 23.0f, 0.0f};
+    data.insulinEntries[8] = {now - 75 * 3600, 3.0f, 0.0f, 40.0f};
+    data.insulinEntries[9] = {now - 82 * 3600, 0.0f, 23.0f, 0.0f};
+    data.insulinCount = 10;
+    data.insulinFetched = now;
+    data.current = {now, 200};
+    data.currentValid = true;
     lv_init();
     fonts::init();
     static lv_color_t pixels[800 * 12];
@@ -112,7 +131,16 @@ int main(int argc, char **argv) {
     uiTick();
     lv_refr_now(nullptr);
     if (argc > 2) {
-        uiShowSetup();
+        if (strcmp(argv[2], "setup") == 0)
+            uiShowSetup();
+        else if (strcmp(argv[2], "clock") == 0)
+            uiShowClock();
+        else if (strcmp(argv[2], "insulin") == 0)
+            uiShowInsulin();
+        else if (strcmp(argv[2], "insulin_weekly") == 0) {
+            uiShowInsulin();
+            uiSetInsulinWeekly(true);
+        }
         uiTick();
         lv_refr_now(nullptr);
     }

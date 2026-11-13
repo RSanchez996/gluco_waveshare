@@ -419,6 +419,11 @@ uint32_t LibreClient::read(AppState &state) {
     state.current = current;
     state.currentValid = currentValid;
     text(state.direction, currentValid ? gluco::libreTrend(reading["TrendArrow"] | 0) : "");
+    const int64_t lastSettledEpoch =
+        state.pointCount ? state.points[state.pointCount - 1].epoch : 0;
+    gluco::updateRecentPoints(state.recentPoints, state.recentPointCount,
+                             gluco::kMaxRecentPoints, lastSettledEpoch, current, currentValid,
+                             now);
     // Solo RAM. Ninguna escritura periódica a NVS ni trabajo adicional en HTTPS.
     state.glucoseFetched = time(nullptr);
     state.glucoseError[0] = 0;
@@ -592,7 +597,7 @@ bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, s
     outCount = 0;
     if (!out || !maxOut || now < 1700000000)
         return false;
-    if (!config.diabetesmEnabled || config.diabetesmUser.isEmpty() || config.diabetesmPass.isEmpty())
+    if (config.diabetesmUser.isEmpty() || config.diabetesmPass.isEmpty())
         return false;
 
     if (token.isEmpty()) {
@@ -690,4 +695,116 @@ bool DiabetesMClient::fetchHistory24h(const Config &config, gluco::Point *out, s
     Serial.printf("[DIABETES-M] Histórico 24h recuperado: %u bloques de 5 min\n", unsigned(outCount));
     return outCount > 0;
 }
+
+bool DiabetesMClient::fetchInsulinEntries(const Config &config, InsulinEntry *out, size_t maxOut,
+                                         size_t &outCount, int64_t now, String &error) {
+    outCount = 0;
+    if (!out || !maxOut || now < 1700000000)
+        return false;
+    if (config.diabetesmUser.isEmpty() || config.diabetesmPass.isEmpty())
+        return false;
+
+    if (token.isEmpty()) {
+        if (!login(config, error))
+            return false;
+    }
+
+    const long long toMs = static_cast<long long>(now + 86400) * 1000LL;
+    const long long fromMs = static_cast<long long>(now - 7 * 86400) * 1000LL;
+
+    Doc req(256);
+    req["fromDate"] = fromMs;
+    req["toDate"] = toMs;
+    String body;
+    serializeJson(req, body);
+
+    Doc filter(512);
+    JsonArray arrFilter = filter.createNestedArray("logEntryList");
+    JsonObject itemFilter = arrFilter.createNestedObject();
+    itemFilter["entry_time"] = true;
+    itemFilter["carb_bolus"] = true;
+    itemFilter["correction_bolus"] = true;
+    itemFilter["extended_bolus"] = true;
+    itemFilter["basal"] = true;
+    itemFilter["carbs"] = true;
+    itemFilter["notes"] = true;
+
+    std::initializer_list<net::Header> hdrs = {
+        {"Authorization", "Bearer " + token},
+        {"Origin", "https://analytics.diabetes-m.com"},
+        {"Referer", "https://analytics.diabetes-m.com/"},
+        {"Cookie", cookies}
+    };
+
+    Doc res(64 * 1024);
+    appDiagnosticStage("Diabetes:M: registros insulina");
+    net::Response r = net::request(
+        "https://analytics.diabetes-m.com/api/v1/diary/entries/list",
+        res, "POST", body, hdrs, 128 * 1024, filter.as<JsonVariantConst>());
+
+    if (r.status == 401) {
+        token = "";
+        cookies = "";
+        if (!login(config, error))
+            return false;
+        res.clear();
+        std::initializer_list<net::Header> retryHdrs = {
+            {"Authorization", "Bearer " + token},
+            {"Origin", "https://analytics.diabetes-m.com"},
+            {"Referer", "https://analytics.diabetes-m.com/"},
+            {"Cookie", cookies}
+        };
+        r = net::request(
+            "https://analytics.diabetes-m.com/api/v1/diary/entries/list",
+            res, "POST", body, retryHdrs, 128 * 1024, filter.as<JsonVariantConst>());
+    }
+
+    if (r.status != 200 || !res["logEntryList"].is<JsonArray>()) {
+        error = "Diabetes:M insulina: " + (r.error.isEmpty() ? String("HTTP ") + String(r.status) : r.error);
+        Serial.printf("[DIABETES-M] Error descargando registros de insulina (%d): %s\n", r.status, error.c_str());
+        return false;
+    }
+
+    const int64_t minEpoch = now - 7 * 86400;
+    const int64_t maxEpoch = now + 86400;
+
+    for (JsonObjectConst item : res["logEntryList"].as<JsonArrayConst>()) {
+        const int64_t entryTimeMs = item["entry_time"] | 0LL;
+        const int64_t epoch = entryTimeMs / 1000LL;
+        if (epoch < minEpoch || epoch > maxEpoch)
+            continue;
+
+        const float carbBolus = item["carb_bolus"] | 0.0f;
+        const float corrBolus = item["correction_bolus"] | 0.0f;
+        const float extBolus = item["extended_bolus"] | 0.0f;
+        float bolus = carbBolus + corrBolus + extBolus;
+        const float basal = item["basal"] | 0.0f;
+        const float carbs = item["carbs"] | 0.0f;
+
+        if (bolus <= 0.001f) {
+            const char *notes = item["notes"] | "";
+            const char *p = strstr(notes, "Bolo:");
+            if (p) {
+                float nb = 0.0f;
+                if (sscanf(p + 5, "%f", &nb) == 1 && nb > 0.0f)
+                    bolus = nb;
+            }
+        }
+
+        if (bolus <= 0.001f && basal <= 0.001f && carbs <= 0.001f)
+            continue;
+
+        if (outCount < maxOut) {
+            out[outCount++] = {epoch, bolus, basal, carbs};
+        }
+    }
+
+    std::sort(out, out + outCount, [](const InsulinEntry &a, const InsulinEntry &b) {
+        return a.epoch < b.epoch;
+    });
+
+    Serial.printf("[DIABETES-M] Registros de insulina recuperados: %u (últimos 7 días)\n", unsigned(outCount));
+    return true;
+}
+
 
