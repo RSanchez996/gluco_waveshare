@@ -285,6 +285,12 @@ net::Response LibreClient::get(const String &route, Doc &doc, size_t responseLim
             if (!attempt)
                 continue;
         }
+        if (result.status <= 0 && attempt == 0) {
+            Serial.printf("[LIBRE] Reintentando consulta tras error de red/HTTPS (%d: %s)\n",
+                          result.status, result.error.c_str());
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            continue;
+        }
         return result;
     }
     return result;

@@ -27,11 +27,15 @@ bool safe(const String &s) {
 }
 esp_err_t event(esp_http_client_event_t *e) {
     auto *t = static_cast<Transfer *>(e->user_data);
+    if (!t)
+        return ESP_OK;
     if (runtime::due(millis(), t->deadline)) {
         t->failed = true;
         return ESP_FAIL;
     }
-    if (e->event_id == HTTP_EVENT_ON_HEADER && e->header_key && e->header_value) {
+    if (e->event_id == HTTP_EVENT_ERROR) {
+        Serial.println("[HTTP] Evento HTTP_EVENT_ERROR");
+    } else if (e->event_id == HTTP_EVENT_ON_HEADER && e->header_key && e->header_value) {
         if (strcasecmp(e->header_key, "Set-Cookie") == 0) {
             String c = e->header_value;
             int semi = c.indexOf(';');
@@ -126,7 +130,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         }
         Serial.println("[HTTP] Hora NTP sincronizada correctamente");
     }
-    if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
         r.error = "Red ocupada";
         return r;
     }
@@ -248,7 +252,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     esp_http_client_set_timeout_ms(client, 25000);
     int64_t declared = esp_http_client_fetch_headers(client);
     if (declared == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
-        const uint32_t fetchDeadline = millis() + 4000;
+        const uint32_t fetchDeadline = std::min(millis() + 25000, t.deadline);
         while (declared == -28679 && !runtime::due(millis(), fetchDeadline)) {
             vTaskDelay(pdMS_TO_TICKS(100));
             declared = esp_http_client_fetch_headers(client);
@@ -258,9 +262,13 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     r.cookie = t.cookie;
     if (declared < 0) {
         const int err = esp_http_client_get_errno(client);
-        Serial.printf("[HTTP] Timeout esperando cabeceras de %s: status=%d, errno=%d\n",
-                      url.c_str(), r.status, err);
-        r.error = "Tiempo de espera HTTPS agotado esperando respuesta";
+        Serial.printf("[HTTP] Error esperando cabeceras de %s: declared=%lld, status=%d, errno=%d\n",
+                      url.c_str(), declared, r.status, err);
+        if (declared == -28679) {
+            r.error = "Tiempo de espera HTTPS agotado esperando respuesta";
+        } else {
+            r.error = "Fallo HTTPS al recibir cabeceras";
+        }
         return r;
     }
     if (declared > int64_t(t.limit)) {

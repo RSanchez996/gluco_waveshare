@@ -406,10 +406,10 @@ void task(void *) {
             historyStoreLoad(config.patientId.c_str(), work->dailySummary, time(nullptr));
             const uint32_t start = millis();
             const bool hasPatient = !config.patientId.isEmpty();
-            const bool usersFresh = work->connectionCount && (hasPatient || (work->connectionsFetched > 0 &&
-                                    time(nullptr) - work->connectionsFetched < 6 * 60 * 60));
-            connectionsDue = (usersFresh || hasPatient) ? start + 6 * 60 * 60 * 1000UL
-                                                        : start + 1000;
+            const bool usersFresh = work->connectionCount > 0 &&
+                                    (work->connectionsFetched > 0 &&
+                                     time(nullptr) - work->connectionsFetched < 6 * 60 * 60);
+            connectionsDue = usersFresh ? start + 6 * 60 * 60 * 1000UL : start + 2000;
             glucoseDue = hasPatient ? start + 1000 : start + 15000;
             weatherDue = config.locationSet ? (work->weatherValid ? start + 30 * 60 * 1000 : start + 4000) : 0;
             if (!config.locationSet)
@@ -439,6 +439,7 @@ void task(void *) {
             const bool hasDmAuth = !config.diabetesmUser.isEmpty() && !config.diabetesmPass.isEmpty();
             if (dmLinked || hasDmAuth) {
                 if (config.diabetesmEnabled) {
+                    vTaskDelay(pdMS_TO_TICKS(800));
                     gluco::Point pointToUpload{};
                     if (config.diabetesmSyncFiltered) {
                         if (work->pointCount > 0)
@@ -462,7 +463,7 @@ void task(void *) {
                         if (dmPts) {
                             size_t dmCount = 0;
                             String dmErr;
-                            vTaskDelay(pdMS_TO_TICKS(500));
+                            vTaskDelay(pdMS_TO_TICKS(800));
                             if (diabetesm.fetchHistory24h(config, dmPts, 300, dmCount, nowEpoch, dmErr) &&
                                 dmCount > 0) {
                                 historyStoreImport(config.patientId.c_str(), dmPts, dmCount,
@@ -475,7 +476,7 @@ void task(void *) {
                 if (!dmInsulinDue || due(tick, dmInsulinDue)) {
                     const int64_t nowEpoch = time(nullptr);
                     if (nowEpoch >= 1700000000) {
-                        vTaskDelay(pdMS_TO_TICKS(300));
+                        vTaskDelay(pdMS_TO_TICKS(800));
                         InsulinEntry insEntries[kMaxInsulinEntries];
                         size_t insCount = 0;
                         String insErr;
