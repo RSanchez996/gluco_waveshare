@@ -1913,11 +1913,44 @@ void buildDiabetesM() {
 
     label(lv_scr_act(), 100, 254, 650, "Activar sincronización continua con Diabetes:M", &fonts::montserrat16);
 
+    auto onPatientChange = [](lv_event_t *) {
+        if (!diabetesmPatient || !diabetesmUser || !diabetesmSwitch)
+            return;
+        const uint16_t idx = lv_dropdown_get_selected(diabetesmPatient);
+        const char *pid = "";
+        if (snapshot.connectionCount > 0 && idx < snapshot.connectionCount) {
+            pid = snapshot.connections[idx].id;
+        } else {
+            pid = config.patientId.c_str();
+        }
+        DiabetesMLink link{};
+        if (pid && *pid && dmLinkGet(pid, link)) {
+            lv_textarea_set_text(diabetesmUser, link.user);
+            lv_textarea_set_text(diabetesmPass, "");
+            if (link.enabled)
+                lv_obj_add_state(diabetesmSwitch, LV_STATE_CHECKED);
+            else
+                lv_obj_clear_state(diabetesmSwitch, LV_STATE_CHECKED);
+            if (diabetesmMode)
+                lv_dropdown_set_selected(diabetesmMode, link.syncFiltered ? 1 : 0);
+            setupMessage(link.enabled ? "Sincronización activa con cada lectura de LibreLinkUp."
+                                      : "Modo solo consulta: descarga insulina pero no sube lecturas.");
+        } else {
+            lv_textarea_set_text(diabetesmUser, "");
+            lv_textarea_set_text(diabetesmPass, "");
+            lv_obj_clear_state(diabetesmSwitch, LV_STATE_CHECKED);
+            if (diabetesmMode)
+                lv_dropdown_set_selected(diabetesmMode, 0);
+            setupMessage("Sin cuenta vinculada para este paciente.");
+        }
+    };
+    lv_obj_add_event_cb(diabetesmPatient, onPatientChange, LV_EVENT_VALUE_CHANGED, nullptr);
+
     button(lv_scr_act(), 28, 292, 360, "Guardar", saveDiabetesM);
     button(lv_scr_act(), 412, 292, 360, "Ajustes", gotoSettings);
 
     setupMessage(config.diabetesmEnabled ? "Sincronización activa con cada lectura de LibreLinkUp."
-                                         : "Activa la casilla para sincronizar.");
+                                         : "Modo solo consulta: descarga insulina pero no sube lecturas.");
     makeKeyboard();
 }
 void clockPage(lv_event_t *) { pendingPage = PendingPage::Clock; }
