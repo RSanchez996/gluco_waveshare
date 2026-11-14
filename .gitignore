@@ -34,3 +34,4 @@ dist/
 # Keep this public trust-anchor bundle tracked (it is not a private key)
 !firmware/certs/x509_crt_bundle
 monitor_30m.log
+.tools/
