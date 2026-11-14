@@ -437,9 +437,9 @@ void task(void *) {
             }
             const bool dmLinked = dmLinkHasAccount(config.patientId.c_str());
             const bool hasDmAuth = !config.diabetesmUser.isEmpty() && !config.diabetesmPass.isEmpty();
-            if (dmLinked || hasDmAuth) {
+            if ((dmLinked || hasDmAuth) && work->glucoseError[0] == 0) {
                 if (config.diabetesmEnabled) {
-                    vTaskDelay(pdMS_TO_TICKS(800));
+                    vTaskDelay(pdMS_TO_TICKS(1500));
                     gluco::Point pointToUpload{};
                     if (config.diabetesmSyncFiltered) {
                         if (work->pointCount > 0)
@@ -463,7 +463,7 @@ void task(void *) {
                         if (dmPts) {
                             size_t dmCount = 0;
                             String dmErr;
-                            vTaskDelay(pdMS_TO_TICKS(800));
+                            vTaskDelay(pdMS_TO_TICKS(1500));
                             if (diabetesm.fetchHistory24h(config, dmPts, 300, dmCount, nowEpoch, dmErr) &&
                                 dmCount > 0) {
                                 historyStoreImport(config.patientId.c_str(), dmPts, dmCount,
@@ -476,7 +476,7 @@ void task(void *) {
                 if (!dmInsulinDue || due(tick, dmInsulinDue)) {
                     const int64_t nowEpoch = time(nullptr);
                     if (nowEpoch >= 1700000000) {
-                        vTaskDelay(pdMS_TO_TICKS(800));
+                        vTaskDelay(pdMS_TO_TICKS(1500));
                         InsulinEntry insEntries[kMaxInsulinEntries];
                         size_t insCount = 0;
                         String insErr;
@@ -502,6 +502,12 @@ void task(void *) {
                                          : std::max<uint32_t>(120, wait);
             glucoseShortRetries = transient ? std::min<uint8_t>(3, glucoseShortRetries + 1) : 0;
             glucoseDue = lastTlsRequest + seconds * 1000;
+            if (glucoseShortRetries >= 2) {
+                Serial.println("[WIFI] Reintentos fallidos; reconectando enlace Wi-Fi para restablecer sockets...");
+                WiFi.disconnect();
+                connectedAt = 0;
+                scheduleReady = false;
+            }
             if (work->glucoseError[0] && wait > 120)
                 libreBlockedUntil = lastTlsRequest + wait * 1000;
             else if (!work->glucoseError[0])

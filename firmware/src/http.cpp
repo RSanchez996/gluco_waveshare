@@ -158,7 +158,7 @@ Response request(const String &url, Doc &doc, const char *method, const String &
     }
     options.event_handler = event;
     options.user_data = &t;
-    options.timeout_ms = 25000;
+    options.timeout_ms = 15000;
     options.buffer_size = 8192;
     options.buffer_size_tx = 4096;
     options.addr_type = HTTP_ADDR_TYPE_INET;
@@ -249,10 +249,10 @@ Response request(const String &url, Doc &doc, const char *method, const String &
         r.error = "Tiempo del POST HTTP agotado";
         return r;
     }
-    esp_http_client_set_timeout_ms(client, 25000);
+    esp_http_client_set_timeout_ms(client, 15000);
     int64_t declared = esp_http_client_fetch_headers(client);
     if (declared == -28679 /* -ESP_ERR_HTTP_EAGAIN */) {
-        const uint32_t fetchDeadline = std::min(millis() + 25000, t.deadline);
+        const uint32_t fetchDeadline = millis() + 4000;
         while (declared == -28679 && !runtime::due(millis(), fetchDeadline)) {
             vTaskDelay(pdMS_TO_TICKS(100));
             declared = esp_http_client_fetch_headers(client);

@@ -285,12 +285,6 @@ net::Response LibreClient::get(const String &route, Doc &doc, size_t responseLim
             if (!attempt)
                 continue;
         }
-        if (result.status <= 0 && attempt == 0) {
-            Serial.printf("[LIBRE] Reintentando consulta tras error de red/HTTPS (%d: %s)\n",
-                          result.status, result.error.c_str());
-            vTaskDelay(pdMS_TO_TICKS(1500));
-            continue;
-        }
         return result;
     }
     return result;
@@ -731,7 +725,10 @@ bool DiabetesMClient::fetchInsulinEntries(const Config &config, InsulinEntry *ou
     itemFilter["carb_bolus"] = true;
     itemFilter["correction_bolus"] = true;
     itemFilter["extended_bolus"] = true;
+    itemFilter["simple_bolus"] = true;
+    itemFilter["insulin"] = true;
     itemFilter["basal"] = true;
+    itemFilter["basal_dose"] = true;
     itemFilter["carbs"] = true;
     itemFilter["notes"] = true;
 
@@ -783,8 +780,11 @@ bool DiabetesMClient::fetchInsulinEntries(const Config &config, InsulinEntry *ou
         const float carbBolus = item["carb_bolus"] | 0.0f;
         const float corrBolus = item["correction_bolus"] | 0.0f;
         const float extBolus = item["extended_bolus"] | 0.0f;
+        const float simpleBolus = item["simple_bolus"] | (item["insulin"] | 0.0f);
         float bolus = carbBolus + corrBolus + extBolus;
-        const float basal = item["basal"] | 0.0f;
+        if (bolus <= 0.001f && simpleBolus > 0.001f)
+            bolus = simpleBolus;
+        float basal = item["basal"] | (item["basal_dose"] | 0.0f);
         const float carbs = item["carbs"] | 0.0f;
 
         if (bolus <= 0.001f) {
@@ -794,6 +794,15 @@ bool DiabetesMClient::fetchInsulinEntries(const Config &config, InsulinEntry *ou
                 float nb = 0.0f;
                 if (sscanf(p + 5, "%f", &nb) == 1 && nb > 0.0f)
                     bolus = nb;
+            }
+        }
+        if (basal <= 0.001f) {
+            const char *notes = item["notes"] | "";
+            const char *p = strstr(notes, "Basal:");
+            if (p) {
+                float nb = 0.0f;
+                if (sscanf(p + 6, "%f", &nb) == 1 && nb > 0.0f)
+                    basal = nb;
             }
         }
 

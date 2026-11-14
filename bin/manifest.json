@@ -24,8 +24,8 @@
     {
       "file": "gluco_waveshare.bin",
       "offset": 458752,
-      "size": 1665472,
-      "sha256": "2cd6a3ca1cc040e6bac475bae4777e114ac2d3ae5dc36fb834fbc41d4138c98d"
+      "size": 1665872,
+      "sha256": "0bdbba970365740c8ce2b08ac360039e2cb31a6a40ede3f6b2f7021d549e0bcf"
     }
   ]
 }
