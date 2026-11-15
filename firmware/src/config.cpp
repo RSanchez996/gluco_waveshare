@@ -418,8 +418,6 @@ bool configSelectPatient(const char *id, const char *name) {
     if (!id || !*id || strlen(id) > 99 || !name || strlen(name) > 99)
         return false;
     Config next = configSnapshot();
-    if (next.patientId == id && next.patientName == name)
-        return true;
     next.patientId = id;
     next.patientName = name;
     dmLinkApply(id, next);
@@ -694,6 +692,14 @@ bool deviceSaveDiabetesM(const String &user, const String &pass, bool enabled, S
             strlcpy(link.patientName, oldLink.patientName, sizeof(link.patientName));
         } else if (targetId == next.patientId && !next.patientName.isEmpty()) {
             strlcpy(link.patientName, next.patientName.c_str(), sizeof(link.patientName));
+        } else {
+            ResultLock lock;
+            for (size_t i = 0; i < results.peopleCount; ++i) {
+                if (strcmp(results.people[i].id, targetId.c_str()) == 0) {
+                    strlcpy(link.patientName, results.people[i].name, sizeof(link.patientName));
+                    break;
+                }
+            }
         }
         link.enabled = enabled;
         link.syncFiltered = syncFiltered;

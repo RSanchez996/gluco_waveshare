@@ -133,6 +133,16 @@ bool dmLinkApply(const char *patientId, Config &config) {
         config.diabetesmSyncFiltered = link.syncFiltered;
         return true;
     }
+    if (config.patientId == patientId && !config.diabetesmUser.isEmpty()) {
+        link.enabled = config.diabetesmEnabled;
+        link.syncFiltered = config.diabetesmSyncFiltered;
+        strlcpy(link.patientId, patientId, sizeof(link.patientId));
+        strlcpy(link.patientName, config.patientName.c_str(), sizeof(link.patientName));
+        strlcpy(link.user, config.diabetesmUser.c_str(), sizeof(link.user));
+        strlcpy(link.pass, config.diabetesmPass.c_str(), sizeof(link.pass));
+        dmLinkSave(link);
+        return true;
+    }
     config.diabetesmUser = "";
     config.diabetesmPass = "";
     config.diabetesmEnabled = false;

@@ -1827,53 +1827,77 @@ void buildLibre() {
                                               : "Usuario guardado: " + config.patientName);
     makeKeyboard();
 }
-void saveDiabetesM(lv_event_t *) {
-    actionUser = lv_textarea_get_text(diabetesmUser);
-    actionPassword = lv_textarea_get_text(diabetesmPass);
-    actionConnect = diabetesmSwitch && lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED);
-    actionSyncFiltered = selectedSyncFiltered;
-    actionTargetPatientId = config.patientId;
-    if (diabetesmPatient && snapshot.connectionCount > 0) {
-        const uint16_t idx = lv_dropdown_get_selected(diabetesmPatient);
-        if (idx < snapshot.connectionCount) {
-            actionTargetPatientId = snapshot.connections[idx].id;
-        }
-    }
-    hideKeyboard(nullptr);
-    setupAction = SetupAction::SaveDiabetesM;
-}
+static uint16_t currentDiabetesMPatientIdx = 0;
+
 void updateModeButtons() {
     if (!modeBtn2m || !modeBtn15m)
         return;
-    if (!selectedSyncFiltered) {
-        lv_obj_set_style_bg_color(modeBtn2m, c(theme::Button), 0);
-        lv_obj_set_style_border_color(modeBtn2m, c(theme::Green), 0);
-        lv_obj_set_style_border_width(modeBtn2m, 2, 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(modeBtn2m, 0), c(theme::Ink), 0);
+    lv_obj_t *lbl2 = lv_obj_get_child(modeBtn2m, 0);
+    lv_obj_t *lbl15 = lv_obj_get_child(modeBtn15m, 0);
+    const bool isEnabled = diabetesmSwitch && lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED);
+    if (!isEnabled) {
+        lv_obj_add_state(modeBtn2m, LV_STATE_DISABLED);
+        lv_obj_add_state(modeBtn15m, LV_STATE_DISABLED);
+        lv_obj_set_style_bg_color(modeBtn2m, c(theme::Card), 0);
+        lv_obj_set_style_border_color(modeBtn2m, c(theme::Grid), 0);
+        lv_obj_set_style_border_width(modeBtn2m, 1, 0);
+        if (lbl2)
+            lv_obj_set_style_text_color(lbl2, c(theme::Grid), 0);
 
         lv_obj_set_style_bg_color(modeBtn15m, c(theme::Card), 0);
         lv_obj_set_style_border_color(modeBtn15m, c(theme::Grid), 0);
         lv_obj_set_style_border_width(modeBtn15m, 1, 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(modeBtn15m, 0), c(theme::Muted), 0);
+        if (lbl15)
+            lv_obj_set_style_text_color(lbl15, c(theme::Grid), 0);
+        return;
+    }
+    lv_obj_clear_state(modeBtn2m, LV_STATE_DISABLED);
+    lv_obj_clear_state(modeBtn15m, LV_STATE_DISABLED);
+    if (!selectedSyncFiltered) {
+        lv_obj_set_style_bg_color(modeBtn2m, c(theme::Button), 0);
+        lv_obj_set_style_border_color(modeBtn2m, c(theme::Green), 0);
+        lv_obj_set_style_border_width(modeBtn2m, 2, 0);
+        if (lbl2)
+            lv_obj_set_style_text_color(lbl2, c(theme::Ink), 0);
+
+        lv_obj_set_style_bg_color(modeBtn15m, c(theme::Card), 0);
+        lv_obj_set_style_border_color(modeBtn15m, c(theme::Grid), 0);
+        lv_obj_set_style_border_width(modeBtn15m, 1, 0);
+        if (lbl15)
+            lv_obj_set_style_text_color(lbl15, c(theme::Muted), 0);
     } else {
         lv_obj_set_style_bg_color(modeBtn15m, c(theme::Button), 0);
         lv_obj_set_style_border_color(modeBtn15m, c(theme::Green), 0);
         lv_obj_set_style_border_width(modeBtn15m, 2, 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(modeBtn15m, 0), c(theme::Ink), 0);
+        if (lbl15)
+            lv_obj_set_style_text_color(lbl15, c(theme::Ink), 0);
 
         lv_obj_set_style_bg_color(modeBtn2m, c(theme::Card), 0);
         lv_obj_set_style_border_color(modeBtn2m, c(theme::Grid), 0);
         lv_obj_set_style_border_width(modeBtn2m, 1, 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(modeBtn2m, 0), c(theme::Muted), 0);
+        if (lbl2)
+            lv_obj_set_style_text_color(lbl2, c(theme::Muted), 0);
     }
 }
-void onPatientChange(lv_event_t *) {
+
+void onPatientChange(lv_event_t *e) {
     if (!diabetesmPatient || !diabetesmUser || !diabetesmSwitch)
         return;
-    const uint16_t idx = lv_dropdown_get_selected(diabetesmPatient);
+    const uint16_t newIdx = lv_dropdown_get_selected(diabetesmPatient);
+    if (e && newIdx != currentDiabetesMPatientIdx && snapshot.connectionCount > 0 &&
+        currentDiabetesMPatientIdx < snapshot.connectionCount) {
+        const char *prevPid = snapshot.connections[currentDiabetesMPatientIdx].id;
+        const char *u = lv_textarea_get_text(diabetesmUser);
+        const char *p = diabetesmPass ? lv_textarea_get_text(diabetesmPass) : "";
+        const bool en = lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED);
+        String err;
+        deviceSaveDiabetesM(u, p, en, err, prevPid, selectedSyncFiltered);
+    }
+    currentDiabetesMPatientIdx = newIdx;
+
     const char *pid = "";
-    if (snapshot.connectionCount > 0 && idx < snapshot.connectionCount) {
-        pid = snapshot.connections[idx].id;
+    if (snapshot.connectionCount > 0 && newIdx < snapshot.connectionCount) {
+        pid = snapshot.connections[newIdx].id;
     } else {
         pid = config.patientId.c_str();
     }
@@ -1889,14 +1913,41 @@ void onPatientChange(lv_event_t *) {
         updateModeButtons();
         setupMessage(link.enabled ? "Sincronización activa con cada lectura de LibreLinkUp."
                                   : "Modo solo consulta: descarga insulina pero no sube lecturas.");
+    } else if (config.patientId == pid && !config.diabetesmUser.isEmpty()) {
+        lv_textarea_set_text(diabetesmUser, config.diabetesmUser.c_str());
+        lv_textarea_set_text(diabetesmPass, "");
+        if (config.diabetesmEnabled)
+            lv_obj_add_state(diabetesmSwitch, LV_STATE_CHECKED);
+        else
+            lv_obj_clear_state(diabetesmSwitch, LV_STATE_CHECKED);
+        selectedSyncFiltered = config.diabetesmSyncFiltered;
+        updateModeButtons();
+        setupMessage(config.diabetesmEnabled ? "Sincronización activa con cada lectura de LibreLinkUp."
+                                             : "Modo solo consulta: descarga insulina pero no sube lecturas.");
     } else {
         lv_textarea_set_text(diabetesmUser, "");
         lv_textarea_set_text(diabetesmPass, "");
-        lv_obj_add_state(diabetesmSwitch, LV_STATE_CHECKED);
+        lv_obj_clear_state(diabetesmSwitch, LV_STATE_CHECKED);
         selectedSyncFiltered = false;
         updateModeButtons();
         setupMessage("Sin cuenta vinculada para este paciente.");
     }
+}
+
+void saveDiabetesM(lv_event_t *) {
+    const uint16_t idx = diabetesmPatient ? lv_dropdown_get_selected(diabetesmPatient) : 0;
+    const char *targetId = config.patientId.c_str();
+    if (diabetesmPatient && snapshot.connectionCount > 0 && idx < snapshot.connectionCount) {
+        targetId = snapshot.connections[idx].id;
+    }
+    const char *u = lv_textarea_get_text(diabetesmUser);
+    const char *p = diabetesmPass ? lv_textarea_get_text(diabetesmPass) : "";
+    const bool en = diabetesmSwitch && lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED);
+    String err;
+    deviceSaveDiabetesM(u, p, en, err, targetId, selectedSyncFiltered);
+    hideKeyboard(nullptr);
+    pendingPage = PendingPage::Settings;
+    setupMessage("Ajustes de Diabetes:M guardados.");
 }
 void buildDiabetesM() {
     page = Page::DiabetesM;
@@ -1950,6 +2001,7 @@ void buildDiabetesM() {
     lv_dropdown_set_options(diabetesmPatient, options.c_str());
     styleDropdown(diabetesmPatient);
     lv_dropdown_set_selected(diabetesmPatient, selectedIndex);
+    currentDiabetesMPatientIdx = selectedIndex;
     lv_obj_add_event_cb(diabetesmPatient, [](lv_event_t *e) {
         lv_obj_t *list = lv_dropdown_get_list(lv_event_get_target(e));
         if (list)
@@ -1980,11 +2032,15 @@ void buildDiabetesM() {
     lv_obj_center(lbl15m);
 
     lv_obj_add_event_cb(modeBtn2m, [](lv_event_t *) {
+        if (diabetesmSwitch && !lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED))
+            return;
         selectedSyncFiltered = false;
         updateModeButtons();
     }, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_add_event_cb(modeBtn15m, [](lv_event_t *) {
+        if (diabetesmSwitch && !lv_obj_has_state(diabetesmSwitch, LV_STATE_CHECKED))
+            return;
         selectedSyncFiltered = true;
         updateModeButtons();
     }, LV_EVENT_CLICKED, nullptr);
@@ -2012,6 +2068,7 @@ void buildDiabetesM() {
 
     lv_obj_add_event_cb(diabetesmSwitch, [](lv_event_t *e) {
         const bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+        updateModeButtons();
         setupMessage(on ? "Sincronización activa con cada lectura de LibreLinkUp."
                         : "Modo solo consulta: descarga insulina pero no sube lecturas.");
     }, LV_EVENT_VALUE_CHANGED, nullptr);
