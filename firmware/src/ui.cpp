@@ -984,10 +984,16 @@ void buildUsers() {
         lv_obj_set_style_pad_all(list, 10, 0);
         lv_obj_set_scroll_dir(list, LV_DIR_VER);
         for (size_t i = 0; i < snapshot.connectionCount; ++i) {
-            char dmU[64]{};
-            const bool hasDm = dmLinkHasAccount(snapshot.connections[i].id, dmU, sizeof(dmU));
-            String itemText = String(snapshot.connections[i].name) +
-                              (hasDm ? "   [DM Conectado]" : "   [Sin DM]");
+            DiabetesMLink link{};
+            const bool hasDm = dmLinkGet(snapshot.connections[i].id, link) && link.user[0];
+            String itemText = String(snapshot.connections[i].name);
+            if (!hasDm) {
+                itemText += "   [Sin DM]";
+            } else if (link.enabled) {
+                itemText += link.syncFiltered ? "   [DM Activo 15m]" : "   [DM Activo 2m]";
+            } else {
+                itemText += "   [DM Desactivado]";
+            }
             auto *b = button(list, 12, 12 + int(i) * 62, 690, itemText.c_str(),
                              selectUser, reinterpret_cast<void *>(uintptr_t(i)));
             if (config.patientId == snapshot.connections[i].id)
@@ -1567,11 +1573,17 @@ void buildSettings() {
                            &fonts::montserrat16);
     lv_label_set_long_mode(climaLbl, LV_LABEL_LONG_DOT);
 
-    auto *dmLbl = label(lv_scr_act(), 30, 342, 733,
-                        config.diabetesmEnabled
-                            ? ("Diabetes:M: activo (" + (config.diabetesmUser.isEmpty() ? "sin usuario" : config.diabetesmUser) + ")").c_str()
-                            : "Diabetes:M: desactivado",
-                        &fonts::montserrat16);
+    String dmStatusText = "Diabetes:M";
+    if (!config.patientName.isEmpty())
+        dmStatusText += " (" + config.patientName + ")";
+    if (config.diabetesmEnabled) {
+        dmStatusText += ": activo [" + String(config.diabetesmSyncFiltered ? "15 min" : "2 min") + "]";
+        if (!config.diabetesmUser.isEmpty())
+            dmStatusText += " · " + config.diabetesmUser;
+    } else {
+        dmStatusText += ": desactivado";
+    }
+    auto *dmLbl = label(lv_scr_act(), 30, 342, 733, dmStatusText.c_str(), &fonts::montserrat16);
     lv_label_set_long_mode(dmLbl, LV_LABEL_LONG_DOT);
 
     button(lv_scr_act(), 28, 374, 355, "Configurar con QR", gotoQr);
@@ -1997,6 +2009,12 @@ void buildDiabetesM() {
         lv_obj_clear_state(diabetesmSwitch, LV_STATE_CHECKED);
 
     label(lv_scr_act(), 100, 254, 650, "Activar sincronización continua con Diabetes:M", &fonts::montserrat16);
+
+    lv_obj_add_event_cb(diabetesmSwitch, [](lv_event_t *e) {
+        const bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+        setupMessage(on ? "Sincronización activa con cada lectura de LibreLinkUp."
+                        : "Modo solo consulta: descarga insulina pero no sube lecturas.");
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
 
     lv_obj_add_event_cb(diabetesmPatient, onPatientChange, LV_EVENT_VALUE_CHANGED, nullptr);
     onPatientChange(nullptr);
