@@ -34,7 +34,23 @@ void saveLinksDoc(const ArduinoJson::JsonDocument &doc) {
 }
 } // namespace
 
-void dmLinksInit() {}
+void dmLinksInit() {
+    StaticJsonDocument<4096> doc;
+    loadLinksDoc(doc);
+    JsonArray arr = doc.as<JsonArray>();
+    bool modified = false;
+    for (JsonObject obj : arr) {
+        const char *user = obj["user"] | "";
+        const char *pass = obj["pass"] | "";
+        if (user[0] && pass[0] && !(obj["enabled"] | false)) {
+            obj["enabled"] = true;
+            modified = true;
+        }
+    }
+    if (modified) {
+        saveLinksDoc(doc);
+    }
+}
 
 bool dmLinkGet(const char *patientId, DiabetesMLink &out) {
     if (!patientId || !*patientId)

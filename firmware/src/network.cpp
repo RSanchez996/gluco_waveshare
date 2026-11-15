@@ -169,7 +169,8 @@ void task(void *) {
     String locationKey = net::sha256(config.city + "\n" + String(config.latitude, 5) + "\n" +
                                      String(config.longitude, 5));
     String diabetesmKey = net::sha256(config.diabetesmUser + "\n" + config.diabetesmPass + "\n" +
-                                      (config.diabetesmEnabled ? "1" : "0"));
+                                      (config.diabetesmEnabled ? "1" : "0") + "\n" +
+                                      (config.diabetesmSyncFiltered ? "1" : "0"));
     uint32_t knownRevision = configRevision.load(std::memory_order_acquire);
     int lastWifi = -1;
     size_t fallbackIndex = 0;
@@ -254,6 +255,7 @@ void task(void *) {
         const uint32_t revision = configRevision.load(std::memory_order_acquire);
         if (revision != knownRevision) {
             knownRevision = revision;
+            config = configSnapshot();
             const String currentAccountKey =
                 net::sha256(config.libreUser + "\n" + config.librePass + "\n" + config.libreRegion +
                             "\n" + config.libreVersion);
@@ -293,7 +295,8 @@ void task(void *) {
             }
             const String currentDiabetesMKey =
                 net::sha256(config.diabetesmUser + "\n" + config.diabetesmPass + "\n" +
-                            (config.diabetesmEnabled ? "1" : "0"));
+                            (config.diabetesmEnabled ? "1" : "0") + "\n" +
+                            (config.diabetesmSyncFiltered ? "1" : "0"));
             if (currentDiabetesMKey != diabetesmKey) {
                 diabetesmKey = currentDiabetesMKey;
                 diabetesm.resetSession();

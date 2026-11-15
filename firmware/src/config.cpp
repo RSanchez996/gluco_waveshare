@@ -402,6 +402,10 @@ void configLoad() {
         storageState = "invalid";
         return;
     }
+    dmLinksInit();
+    if (!next.patientId.isEmpty()) {
+        dmLinkApply(next.patientId.c_str(), next);
+    }
     configPublish(next);
     storageState = "ok";
 }
@@ -676,14 +680,20 @@ bool deviceSaveDiabetesM(const String &user, const String &pass, bool enabled, S
         DiabetesMLink link{};
         strlcpy(link.patientId, targetId.c_str(), sizeof(link.patientId));
         strlcpy(link.user, user.c_str(), sizeof(link.user));
+        DiabetesMLink oldLink{};
+        const bool hadOld = dmLinkGet(targetId.c_str(), oldLink);
         if (!pass.isEmpty()) {
             strlcpy(link.pass, pass.c_str(), sizeof(link.pass));
         } else {
-            DiabetesMLink oldLink{};
-            if (dmLinkGet(targetId.c_str(), oldLink))
+            if (hadOld)
                 strlcpy(link.pass, oldLink.pass, sizeof(link.pass));
             else if (targetId == next.patientId)
                 strlcpy(link.pass, next.diabetesmPass.c_str(), sizeof(link.pass));
+        }
+        if (hadOld && oldLink.patientName[0]) {
+            strlcpy(link.patientName, oldLink.patientName, sizeof(link.patientName));
+        } else if (targetId == next.patientId && !next.patientName.isEmpty()) {
+            strlcpy(link.patientName, next.patientName.c_str(), sizeof(link.patientName));
         }
         link.enabled = enabled;
         link.syncFiltered = syncFiltered;
@@ -698,6 +708,7 @@ bool deviceSaveDiabetesM(const String &user, const String &pass, bool enabled, S
         next.diabetesmSyncFiltered = syncFiltered;
         return persist(next, error);
     }
+    configPublish(next);
     return true;
 }
 bool configQueueFull(const Config &next, String &error, bool networksOnly) {
